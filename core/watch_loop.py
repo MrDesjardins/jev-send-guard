@@ -17,6 +17,7 @@ from core import config
 from core import jev_client
 from core import notifier
 from core import pre_filter
+from core import stats
 from core.idle_watcher import IdleWatcher
 from core.logging_setup import LOG_PATH, setup_logging
 
@@ -44,8 +45,11 @@ def get_backend():
     return None
 
 
-def run(stop_event, pause_event=None):
-    backend = get_backend()
+def run(stop_event, pause_event=None, backend=None):
+    """`backend`, if given, is used as-is instead of picking one by
+    sys.platform — this is how tests inject platform_backends.mock's
+    MockBackend to exercise this loop's logic without a live OS session."""
+    backend = backend or get_backend()
     if backend is None:
         log.error("Unsupported platform: %s", sys.platform)
         return 1
@@ -171,7 +175,9 @@ def run(stop_event, pause_event=None):
                 continue
             log.info("idle threshold reached, evaluating: %s", _preview(due_text))
             anchor_rect = backend.get_bounding_rect(control)
-            handle_draft(due_text, key, anchor_rect)
+            matched_app = config.get_app(process_name)
+            disabled_questions = set((matched_app or {}).get("disabled_questions", []))
+            handle_draft(due_text, key, anchor_rect, disabled_questions)
             last_evaluated_signature = evaluation_signature
 
         time.sleep(POLL_INTERVAL_SEC)
@@ -180,25 +186,31 @@ def run(stop_event, pause_event=None):
     return 0
 
 
-def handle_draft(text, key, anchor_rect=None):
+def handle_draft(text, key, anchor_rect=None, disabled_questions=None):
     if not pre_filter.should_check(text):
         log.info("pre-filter: skip (too short / plain ack)")
         return
 
     log.debug("calling Jev...")
-    result = jev_client.check_draft(key, text)
+    result = jev_client.check_draft(key, text, disabled_keys=disabled_questions)
     log.info("Jev result: %s", result)
 
     if result is None:
         log.info("Jev call failed, failing open silently (no false-positive checkmark)")
         return
 
-    flagged = [key for key, concern in result.items() if concern]
+    if not result:
+        log.info("no active questions for this app (all disabled), skipping")
+        return
+
+    flagged = [q_key for q_key, concern in result.items() if concern]
+    stats.record_check(flagged)
+
     if not flagged:
         log.info("no concerns, showing checkmark")
         notifier.notify_ok(anchor_rect)
         return
 
-    items = [(jev_client.message_for(key), jev_client.severity_of(key)) for key in flagged]
+    items = [(jev_client.message_for(q_key), jev_client.severity_of(q_key)) for q_key in flagged]
     log.info("notifying: %s (anchor_rect=%s)", items, anchor_rect)
     notifier.notify(items, anchor_rect)

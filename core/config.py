@@ -92,6 +92,28 @@ def list_apps():
     return load_config().get("apps", [])
 
 
+def get_app(process_name):
+    if not process_name:
+        return None
+    process_name = process_name.lower()
+    return next(
+        (a for a in load_config()["apps"] if a["process_name"].lower() == process_name),
+        None,
+    )
+
+
+def set_app_disabled_questions(process_name, disabled_keys):
+    """Per-app override: which of the four Jev questions to skip for this
+    app specifically (e.g. turn off `unprofessional` for a casual Discord
+    server without affecting anything else)."""
+    config = load_config()
+    for app in config["apps"]:
+        if app["process_name"].lower() == process_name.lower():
+            app["disabled_questions"] = sorted(set(disabled_keys))
+            break
+    save_config(config)
+
+
 def add_app(label, process_name, domains=None):
     """Adds or replaces a watched app.
 
@@ -169,3 +191,32 @@ def is_watched(process_name, domain=None, config=None):
 def app_requires_browser_host(process_name):
     """True for known browser processes, including legacy hostless entries."""
     return is_browser_process(process_name)
+
+
+def get_question_overrides():
+    """User-edited overrides for the built-in Jev questions (see
+    core/jev_client.py's QUESTIONS for the defaults each of these merges
+    onto). Keyed by question key, e.g.:
+
+        [questions.unprofessional]
+        enabled = false
+        instructions = "..."
+    """
+    return load_config().get("questions", {})
+
+
+def set_question_override(key, **fields):
+    config = load_config()
+    questions = config.setdefault("questions", {})
+    entry = questions.setdefault(key, {})
+    entry.update({k: v for k, v in fields.items() if v is not None})
+    save_config(config)
+
+
+def reset_question_override(key):
+    config = load_config()
+    questions = config.get("questions", {})
+    if key in questions:
+        del questions[key]
+        config["questions"] = questions
+        save_config(config)

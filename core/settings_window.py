@@ -14,6 +14,8 @@ from tkinter import messagebox, simpledialog
 
 from core import api_key as api_key_store
 from core import config
+from core import jev_client
+from core import stats
 
 log = logging.getLogger("jev-send-guard")
 
@@ -30,12 +32,131 @@ def _get_backend():
     return None
 
 
+def _open_edit_app_dialog(parent, app, on_saved):
+    """Per-app tuning: which of the four questions to skip for this app
+    specifically (e.g. turn off `unprofessional` for a casual Discord
+    server without touching anything global)."""
+    dialog = tk.Toplevel(parent)
+    dialog.title(f"Edit {app['label']}")
+    dialog.resizable(False, False)
+    dialog.transient(parent)
+    dialog.grab_set()
+
+    tk.Label(
+        dialog,
+        text=f"Checks to run for {app['label']!r}:",
+        font=("Segoe UI", 9, "bold"),
+    ).pack(anchor="w", padx=12, pady=(12, 6))
+
+    disabled = set(app.get("disabled_questions", []))
+    vars_by_key = {}
+    for key, q in jev_client.get_question_defs().items():
+        var = tk.BooleanVar(value=key not in disabled)
+        vars_by_key[key] = var
+        tk.Checkbutton(dialog, text=q["message"], variable=var).pack(anchor="w", padx=20)
+
+    def do_save():
+        new_disabled = [key for key, var in vars_by_key.items() if not var.get()]
+        config.set_app_disabled_questions(app["process_name"], new_disabled)
+        dialog.destroy()
+        if on_saved:
+            on_saved()
+
+    button_row = tk.Frame(dialog)
+    button_row.pack(pady=12)
+    tk.Button(button_row, text="Save", command=do_save).pack(side="left", padx=4)
+    tk.Button(button_row, text="Cancel", command=dialog.destroy).pack(side="left", padx=4)
+
+
+def _open_configure_checks_dialog(parent):
+    """Global prompt editing: instructions/message/severity/enabled for
+    each of the four built-in Jev questions, stored as overrides in
+    config.toml (core/jev_client.py's QUESTIONS holds the real defaults —
+    "Reset to default" just drops the override, it never rewrites them)."""
+    dialog = tk.Toplevel(parent)
+    dialog.title("Configure checks")
+    dialog.geometry("420x420")
+    dialog.transient(parent)
+    dialog.grab_set()
+
+    tk.Label(
+        dialog,
+        text="Pick a check to edit, then Save or Reset to default.",
+        fg="#5f6368",
+    ).pack(anchor="w", padx=12, pady=(12, 6))
+
+    keys = list(jev_client.QUESTIONS.keys())
+    selected = tk.StringVar(value=keys[0])
+    selector_row = tk.Frame(dialog)
+    selector_row.pack(fill="x", padx=12)
+    tk.OptionMenu(selector_row, selected, *keys).pack(side="left")
+
+    enabled_var = tk.BooleanVar()
+    severity_var = tk.StringVar()
+
+    tk.Checkbutton(dialog, text="Enabled", variable=enabled_var).pack(
+        anchor="w", padx=12, pady=(8, 0)
+    )
+
+    severity_row = tk.Frame(dialog)
+    severity_row.pack(fill="x", padx=12, pady=(4, 0))
+    tk.Label(severity_row, text="Severity:").pack(side="left")
+    tk.OptionMenu(severity_row, severity_var, "error", "warning").pack(side="left")
+
+    tk.Label(dialog, text="Popup message:").pack(anchor="w", padx=12, pady=(8, 0))
+    message_entry = tk.Entry(dialog)
+    message_entry.pack(fill="x", padx=12)
+
+    tk.Label(dialog, text="Instructions sent to Jev:").pack(anchor="w", padx=12, pady=(8, 0))
+    instructions_text = tk.Text(dialog, height=7, wrap="word")
+    instructions_text.pack(fill="both", expand=True, padx=12)
+
+    def load_selected(*_args):
+        q = jev_client.get_question_defs()[selected.get()]
+        enabled_var.set(q.get("enabled", True))
+        severity_var.set(q["severity"])
+        message_entry.delete(0, tk.END)
+        message_entry.insert(0, q["message"])
+        instructions_text.delete("1.0", tk.END)
+        instructions_text.insert("1.0", q["instructions"])
+
+    selected.trace_add("write", load_selected)
+    load_selected()
+
+    status_var = tk.StringVar()
+
+    def do_save():
+        config.set_question_override(
+            selected.get(),
+            enabled=enabled_var.get(),
+            severity=severity_var.get(),
+            message=message_entry.get().strip() or None,
+            instructions=instructions_text.get("1.0", tk.END).strip() or None,
+        )
+        status_var.set(f"Saved {selected.get()!r}.")
+        dialog.after(2000, lambda: status_var.set(""))
+
+    def do_reset():
+        config.reset_question_override(selected.get())
+        load_selected()
+        status_var.set(f"Reset {selected.get()!r} to default.")
+        dialog.after(2000, lambda: status_var.set(""))
+
+    button_row = tk.Frame(dialog)
+    button_row.pack(pady=8)
+    tk.Button(button_row, text="Save", command=do_save).pack(side="left", padx=4)
+    tk.Button(button_row, text="Reset to default", command=do_reset).pack(side="left", padx=4)
+    tk.Button(button_row, text="Close", command=dialog.destroy).pack(side="left", padx=4)
+
+    tk.Label(dialog, textvariable=status_var, fg="#81c995").pack(anchor="w", padx=12, pady=(0, 8))
+
+
 def open_settings_window(on_change=None):
     """Blocking until the window is closed. `on_change`, if given, is
     called (no args) whenever the watched-app list changes."""
     root = tk.Tk()
     root.title("Jev Send Guard — Settings")
-    root.geometry("380x460")
+    root.geometry("380x680")
     root.resizable(False, False)
 
     tk.Label(root, text="Watched apps", font=("Segoe UI", 10, "bold")).pack(
@@ -180,12 +301,30 @@ def open_settings_window(on_change=None):
 
         root.after(200, poll)
 
+    def do_edit_selected():
+        selection = listbox.curselection()
+        if not selection:
+            return
+        app = config.list_apps()[selection[0]]
+
+        def on_saved():
+            refresh_list()
+            if on_change:
+                on_change()
+
+        _open_edit_app_dialog(root, app, on_saved)
+
     button_row = tk.Frame(root)
     button_row.pack(fill="x", padx=12, pady=6)
     tk.Button(button_row, text="Add app...", command=do_add).pack(side="left")
     tk.Button(button_row, text="Remove selected", command=do_remove).pack(side="left", padx=(8, 0))
+    tk.Button(button_row, text="Edit selected", command=do_edit_selected).pack(side="left", padx=(8, 0))
 
     tk.Label(root, textvariable=add_status_var, fg="#5f6368").pack(anchor="w", padx=12)
+
+    tk.Button(
+        root, text="Configure checks...", command=lambda: _open_configure_checks_dialog(root)
+    ).pack(anchor="w", padx=12, pady=(4, 0))
 
     tk.Label(root, text="TypeSafe API key", font=("Segoe UI", 10, "bold")).pack(
         anchor="w", padx=12, pady=(16, 4)
@@ -212,6 +351,41 @@ def open_settings_window(on_change=None):
 
     tk.Button(key_frame, text="Save", command=do_save_key).pack(side="left", padx=(8, 0))
     tk.Label(root, textvariable=key_status_var, fg="#81c995").pack(anchor="w", padx=12)
+
+    tk.Label(root, text="Usage", font=("Segoe UI", 10, "bold")).pack(
+        anchor="w", padx=12, pady=(16, 4)
+    )
+
+    usage_var = tk.StringVar()
+
+    def refresh_usage():
+        s = stats.summary()
+        if s["total_checks"] == 0:
+            usage_var.set("No checks recorded yet.")
+            return
+        per_question = ", ".join(
+            f"{key}: {count}"
+            for key, count in sorted(s["per_question"].items(), key=lambda kv: -kv[1])
+        )
+        usage_var.set(
+            f"{s['total_checks']} checks, {s['total_flagged']} flagged "
+            f"({s['flagged_pct']:.0f}%).\n"
+            f"{per_question or 'Nothing flagged yet.'}"
+        )
+
+    refresh_usage()
+    tk.Label(root, textvariable=usage_var, fg="#5f6368", justify="left", wraplength=340).pack(
+        anchor="w", padx=12
+    )
+
+    def do_reset_stats():
+        if messagebox.askyesno("Reset usage stats", "Clear all recorded usage stats?", parent=root):
+            stats.reset()
+            refresh_usage()
+
+    tk.Button(root, text="Reset stats", command=do_reset_stats).pack(
+        anchor="w", padx=12, pady=(4, 0)
+    )
 
     tk.Button(root, text="Close", command=root.destroy).pack(pady=16)
 
