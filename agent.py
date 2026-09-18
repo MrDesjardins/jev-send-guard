@@ -96,8 +96,7 @@ def run():
     if sys.platform == "win32":
         from platform_backends import windows as backend
     elif sys.platform == "darwin":
-        log.error("macOS support isn't wired up yet.")
-        return 1
+        from platform_backends import macos as backend
     else:
         log.error("Unsupported platform: %s", sys.platform)
         return 1

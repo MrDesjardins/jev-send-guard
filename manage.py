@@ -22,8 +22,7 @@ def cmd_add(args):
     if sys.platform == "win32":
         from platform_backends import windows as backend
     elif sys.platform == "darwin":
-        print("macOS support isn't wired up yet.")
-        return 1
+        from platform_backends import macos as backend
     else:
         print(f"Unsupported platform: {sys.platform}")
         return 1

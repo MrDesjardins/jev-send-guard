@@ -271,6 +271,7 @@ dependencies = [
 macos = [
     { name = "pyobjc-framework-applicationservices", marker = "sys_platform == 'darwin'" },
     { name = "pyobjc-framework-cocoa", marker = "sys_platform == 'darwin'" },
+    { name = "pyobjc-framework-quartz", marker = "sys_platform == 'darwin'" },
 ]
 windows = [
     { name = "uiautomation", marker = "sys_platform == 'win32'" },
@@ -283,6 +284,7 @@ requires-dist = [
     { name = "psutil", specifier = ">=6.0" },
     { name = "pyobjc-framework-applicationservices", marker = "sys_platform == 'darwin' and extra == 'macos'", specifier = ">=10.0" },
     { name = "pyobjc-framework-cocoa", marker = "sys_platform == 'darwin' and extra == 'macos'", specifier = ">=10.0" },
+    { name = "pyobjc-framework-quartz", marker = "sys_platform == 'darwin' and extra == 'macos'", specifier = ">=10.0" },
     { name = "tomli-w", specifier = ">=1.0" },
     { name = "uiautomation", marker = "sys_platform == 'win32' and extra == 'windows'", specifier = ">=2.0.20" },
 ]

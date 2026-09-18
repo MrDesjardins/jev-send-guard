@@ -141,17 +141,29 @@ install/
 
 ## Open questions to resolve while building
 
-- Exact idle threshold (starting guess: 1s) — same "tune after real
-  usage" posture as v1's Jev threshold.
-- Whether `plyer` covers both OSes' notification needs well enough, or
-  whether per-OS native notification code is needed from the start —
-  decide once actually testing on both.
-- Whether to keep the v1 browser-extension code around as a fallback for
-  apps whose accessibility tree doesn't expose useful text (leaning: keep
-  it working but not invest further in it while v2 is unproven).
-- **Slack desktop (Electron) not yet spiked on Windows** — Discord came
-  back positive (see below), but each Electron app's accessibility tree
-  can differ; verify Slack the same way before assuming coverage.
+- Exact idle threshold: lowered from the original 1s guess's sibling
+  (`MIN_LENGTH`, not idle itself) after real usage — see `core/pre_filter.py`.
+  The 1s idle window itself hasn't needed adjustment yet.
+- ~~Whether `plyer` covers both OSes' notification needs~~ — resolved:
+  `plyer` didn't reliably surface a visible toast on Windows, so the nudge
+  became a custom `tkinter` popup anchored to the field's bounding rect
+  instead (see `core/notifier.py`). No dependency needed either way.
+- The v1 browser-extension JS code has been removed (2026-09-17) — v2 fully
+  superseded it once the Windows backend was validated end-to-end, so there
+  was nothing left to fall back to. The v1 write-up below is kept purely as
+  historical record of the design that came before.
+- **Slack desktop (Electron) not yet spiked on either OS** — Discord came
+  back positive on Windows (see below), but each Electron app's
+  accessibility tree can differ; verify Slack the same way before assuming
+  coverage, and worth checking again once macOS is validated too.
+- **macOS: not yet run against a live session.** `platform_backends/macos.py`
+  is built to the same interface as `windows.py` (see Milestone 1b below)
+  but is unverified — needs the same "spike and validate" pass Windows got.
+  One macOS-specific gotcha to expect: the process running the agent needs
+  Accessibility permission (System Settings → Privacy & Security →
+  Accessibility) granted explicitly, or `get_focused_control()` will just
+  return `None` forever with no error — that's the first thing to check if
+  `manage.py add` times out with nothing detected.
 
 ### Milestone 1 (Windows) — validated 2026-09-17
 
@@ -172,6 +184,67 @@ The child-walk-children fallback (concatenating leaf node `Name`s) was
 added as a safety net for editors that don't aggregate text at all on the
 parent control, but wasn't needed for Discord specifically — worth keeping
 for Slack or other apps that may behave differently.
+
+Also built and validated end-to-end beyond the spike itself: the allowlist
+(`manage.py add/list/remove`, `core/config.py`), idle debounce
+(`core/idle_watcher.py`), ported pre-filter/Jev-call (`core/pre_filter.py`,
+`core/jev_client.py`), and the anchored popup notifier (`core/notifier.py`).
+Real issues hit and fixed along the way, worth knowing about before
+touching this code:
+
+- **Latency**: individual Jev calls were taking 14-18s on the test Windows
+  machine despite a 4s per-phase timeout — not a timeout bug, since each
+  phase (DNS/connect/TLS/request) can individually stay under its own
+  4s budget while still summing to something much larger, because
+  `httpx`'s `timeout=` is a per-operation budget, not a whole-request one.
+  Root cause on that machine: IPv6 "happy eyeballs" (DNS returning an
+  unreachable IPv6 address that has to time out before falling back to
+  IPv4) and/or WPAD/PAC proxy auto-detection. Fixed in `jev_client.py` via
+  `local_address="0.0.0.0"` (forces IPv4 — this is `httpcore`'s documented
+  mechanism for it) and `trust_env=False` (skips proxy auto-detection).
+- **Popup positioning**: the focused control's `BoundingRectangle` can have
+  negative coordinates on a multi-monitor setup where a display sits
+  above/left of the primary one. Clamping against `tkinter`'s
+  `winfo_screenwidth/height()` (which only reports the *primary* monitor)
+  silently misplaced the popup onto the wrong monitor. Fix: trust the
+  accessibility API's raw coordinates, and always place the popup *above*
+  the field (compose boxes sit near the bottom of their window/screen, so
+  "below" routinely pushed it past the screen edge).
+- **Startup speed**: `keyring`'s default backend selection scans installed
+  packages' entry points to pick a backend, which is a known source of a
+  slow first call. Fixed via explicit backend selection
+  (`WinVaultKeyring`/macOS `Keyring`) in `core/api_key.py`.
+- **Silence is ambiguous feedback**: given Jev calls can take several
+  seconds, showing nothing on a clean result is easy to misread as "still
+  working" or "broken." `notifier.notify_ok()` shows a brief green
+  checkmark on a genuine clean result; a failed/timed-out call (fail-open)
+  stays silent rather than falsely claiming "looks good."
+
+### Milestone 1b (macOS) — built, not yet validated
+
+`platform_backends/macos.py` mirrors `windows.py`'s exact function
+interface (`get_focused_control`, `get_control_text`, `is_password_field`,
+`get_bounding_rect`, `safe_runtime_id`, `run_add_flow`, etc.) using
+`pyobjc`'s `ApplicationServices` bindings (`AXUIElementCopyAttributeValue`,
+`AXValueGetValue` for position/size) instead of UI Automation. Same
+fallback shape as Windows (direct value, then a child-walk over
+`kAXChildrenAttribute` for rich editors that don't aggregate text on the
+parent control) and same password hard-skip (checked via
+`kAXRoleAttribute`/`kAXSubroleAttribute` containing `SecureTextField`).
+
+Two things this couldn't inherit from the Windows validation and need a
+real macOS run to confirm:
+- Whether `AXUIElementCopyAttributeValue`'s out-parameter tuple convention
+  (`(err, value)`) matches this pyobjc version exactly — written from
+  documented patterns, not tested against a live call.
+- Whether Electron apps' AX tree on macOS needs the same child-walk
+  fallback Discord needed on Windows, or aggregates text differently.
+
+`safe_runtime_id()` also can't use a real stable element ID the way
+Windows' `RuntimeId` works — there's no macOS AX equivalent — so it builds
+a fingerprint from pid + role + subrole + bounding rect instead. Good
+enough for "did focus change," not a true identity check; worth
+revisiting if it turns out to misfire on some app.
 
 ## Rough milestones
 
