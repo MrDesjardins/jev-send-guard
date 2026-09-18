@@ -20,6 +20,10 @@ and why.
 - **macOS**: built to the same interface as Windows (`platform_backends/
   macos.py`) but not yet run against a live session — see `PLAN.md`'s
   "Milestone 1b" for what specifically needs validating.
+- **Tray app** (`tray_app.py`): built on both platforms, not yet run
+  against a live session either — see `PLAN.md`'s "Milestone 2" for the
+  one threading assumption (opening a `tkinter` window from a `pystray`
+  menu callback) worth checking first if Settings doesn't open cleanly.
 
 ## Setup
 
@@ -33,37 +37,41 @@ uv sync --extra windows
 uv sync --extra macos
 ```
 
-Store your TypeSafe API key in the OS credential store (or set
-`TYPESAFE_API_KEY` in the environment for local testing instead):
+## Run it
+
+The tray app is the recommended way to run this day to day — a tray
+(Windows) / menu-bar (macOS) icon with a Settings window, no console
+needed:
+
+```bash
+uv run tray_app.py
+```
+
+Click the icon for **Settings...** (add/remove watched apps, set the API
+key — nothing is watched until you add at least one app; the default
+allowlist is empty), **Paused** (toggle), and **Quit**.
+
+A headless/console alternative also exists, for scripting or if you'd
+rather not have a tray icon:
 
 ```bash
 uv run manage.py set-key
-```
-
-Add at least one app to watch — this is interactive: it asks you to switch
-to the target app and type a couple of words there, detects which process
-that was, then asks for a short label. Nothing is watched until you do
-this; the default allowlist is empty.
-
-```bash
-uv run manage.py add
+uv run manage.py add        # interactive: switch to the target app, type a couple of words
 uv run manage.py list
 uv run manage.py remove "Discord messages"
+uv run agent.py              # Ctrl+C to stop
 ```
+
+Both share the same config file, so mixing them is fine — e.g. `manage.py
+add` from a script, then run the tray app day to day.
 
 On macOS, the agent needs Accessibility permission (System Settings →
 Privacy & Security → Accessibility) granted to whatever process is running
-Python, or it'll silently see nothing — no error, `add` will just time out.
+Python, or it'll silently see nothing — no error, adding an app will just
+time out.
 
-## Run it
-
-```bash
-uv run agent.py
-```
-
-Ctrl+C to stop. A detailed trace always goes to
-`~/.jev-send-guard/agent.log`; set `JEV_DEBUG=1` to also mirror it to the
-console.
+A detailed trace always goes to `~/.jev-send-guard/agent.log`; set
+`JEV_DEBUG=1` to also mirror it to the console.
 
 ## Project layout
 
@@ -72,15 +80,19 @@ core/                        Pure Python, OS-agnostic
   pre_filter.py               Local heuristic: should this draft even be checked?
   jev_client.py                 Calls Jev with two noul questions, fails open on any error
   idle_watcher.py                 Debounce: "you stopped typing, evaluate now"
-  notifier.py                       The popup, anchored to the field's bounding rect
-  api_key.py                          OS credential store via `keyring`
-  config.py                             The watched-app allowlist (~/.jev-send-guard/config.toml)
+  watch_loop.py                     The loop itself: shared by agent.py and tray_app.py
+  notifier.py                          The popup, anchored to the field's bounding rect
+  settings_window.py                     Tkinter Settings window, opened from the tray icon
+  api_key.py                                OS credential store via `keyring`
+  config.py                                   The watched-app allowlist (~/.jev-send-guard/config.toml)
+  logging_setup.py                              Shared logging config (console + file)
 
 platform_backends/
   windows.py                  UI Automation backend (validated)
   macos.py                     Accessibility API (AX*) backend (unvalidated — see PLAN.md)
   windows_spike.py               Throwaway script used to validate the Windows approach
 
-agent.py                     Entrypoint: the watch loop
-manage.py                    CLI: add/list/remove watched apps, set the API key
+tray_app.py                  Recommended entrypoint: tray icon + Settings window
+agent.py                     Headless CLI entrypoint (no tray/pause control)
+manage.py                    Console CLI: add/list/remove watched apps, set the API key
 ```

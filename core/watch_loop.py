@@ -1,0 +1,159 @@
+"""The watch loop itself, shared by the headless CLI (agent.py) and the
+tray app (tray_app.py): polls the focused control in allowlisted apps,
+debounces on typing pauses, and runs the pre-filter/Jev check.
+
+Runs until `stop_event` is set. `pause_event`, if given and set, keeps the
+loop alive (so resuming is instant) but skips all evaluation — used by the
+tray app's Pause/Resume menu item. The allowlist is re-read from disk each
+iteration so changes made in the tray's Settings window take effect live,
+without restarting the loop.
+"""
+
+import sys
+import time
+
+from core import api_key as api_key_store
+from core import config
+from core import jev_client
+from core import notifier
+from core import pre_filter
+from core.idle_watcher import IdleWatcher
+from core.logging_setup import LOG_PATH, setup_logging
+
+log = setup_logging()
+
+POLL_INTERVAL_SEC = 0.3
+
+
+def _preview(text, limit=80):
+    if text is None:
+        return "None"
+    text = repr(text)
+    return text if len(text) <= limit else text[:limit] + "…'"
+
+
+def get_backend():
+    if sys.platform == "win32":
+        from platform_backends import windows as backend
+
+        return backend
+    if sys.platform == "darwin":
+        from platform_backends import macos as backend
+
+        return backend
+    return None
+
+
+def run(stop_event, pause_event=None):
+    backend = get_backend()
+    if backend is None:
+        log.error("Unsupported platform: %s", sys.platform)
+        return 1
+
+    watched_apps = config.list_apps()
+    if not watched_apps:
+        log.error("No apps are being watched. Add one from the tray Settings, or `manage.py add`.")
+        return 1
+
+    key = api_key_store.get_api_key()
+    if not key:
+        log.error(
+            "No API key set. Set one from the tray Settings, or `manage.py set-key` "
+            "(or set TYPESAFE_API_KEY for local testing)."
+        )
+        return 1
+
+    log.info("Watching:")
+    for app in watched_apps:
+        log.info("  - %s (%s)", app["label"], app["process_name"])
+    log.info("Log file: %s", LOG_PATH)
+
+    idle_watcher = IdleWatcher()
+    last_runtime_id = None
+    last_logged_text = object()  # sentinel, never equal to a real text value
+    was_watched = False
+
+    while not stop_event.is_set():
+        if pause_event is not None and pause_event.is_set():
+            time.sleep(POLL_INTERVAL_SEC)
+            continue
+
+        control = backend.get_focused_control()
+        if control is None:
+            time.sleep(POLL_INTERVAL_SEC)
+            continue
+
+        runtime_id = backend.safe_runtime_id(control)
+        focus_changed = runtime_id != last_runtime_id
+        if focus_changed:
+            last_runtime_id = runtime_id
+            idle_watcher.reset()
+            last_logged_text = object()
+
+        process_name = backend.get_process_name(backend.get_process_id(control))
+        current_apps = config.list_apps()
+        watched = bool(process_name) and config.is_watched(process_name, {"apps": current_apps})
+
+        if focus_changed:
+            log.debug(
+                "focus -> process=%r watched=%s runtime_id=%r",
+                process_name, watched, runtime_id,
+            )
+
+        if not watched:
+            if was_watched:
+                log.debug("focus left watched app")
+            was_watched = False
+            time.sleep(POLL_INTERVAL_SEC)
+            continue
+        was_watched = True
+
+        if backend.is_password_field(control):
+            log.debug("skip: password/secure field")
+            time.sleep(POLL_INTERVAL_SEC)
+            continue
+
+        text = backend.get_control_text(control)
+        if text != last_logged_text:
+            log.debug("text read: %s", _preview(text))
+            last_logged_text = text
+
+        idle_watcher.observe(text)
+
+        due_text = idle_watcher.due()
+        if due_text is not None:
+            log.info("idle threshold reached, evaluating: %s", _preview(due_text))
+            anchor_rect = backend.get_bounding_rect(control)
+            handle_draft(due_text, key, anchor_rect)
+
+        time.sleep(POLL_INTERVAL_SEC)
+
+    log.info("watch loop stopped")
+    return 0
+
+
+def handle_draft(text, key, anchor_rect=None):
+    if not pre_filter.should_check(text):
+        log.info("pre-filter: skip (too short / plain ack)")
+        return
+
+    log.debug("calling Jev...")
+    result = jev_client.check_draft(key, text)
+    log.info("Jev result: %s", result)
+
+    if result is None:
+        log.info("Jev call failed, failing open silently (no false-positive checkmark)")
+        return
+
+    if not result["curt"] and not result["missing_ask"]:
+        log.info("no concerns, showing checkmark")
+        notifier.notify_ok(anchor_rect)
+        return
+
+    messages = []
+    if result["curt"]:
+        messages.append("This might read as curt or blunt.")
+    if result["missing_ask"]:
+        messages.append("Doesn't seem to have a clear ask.")
+    log.info("notifying: %s (anchor_rect=%s)", messages, anchor_rect)
+    notifier.notify(messages, anchor_rect)

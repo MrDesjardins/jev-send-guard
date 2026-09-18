@@ -75,9 +75,12 @@ supported surfaces to effectively all of them.
    and OS-agnostic.
 2. **Per-app allowlist, configured explicitly.** A local config file
    (e.g. `~/.jev-send-guard/config.toml`) lists watched process
-   names/bundle IDs. No UI needed for v2.1 — hand-edited config is fine
-   to start; a small tray/menu-bar settings UI is a later nice-to-have,
-   not required to ship.
+   names/bundle IDs. Originally console-only (`manage.py add/list/remove`);
+   a system tray icon with a `tkinter` Settings window (`tray_app.py`,
+   `core/settings_window.py`) was added afterward as the friendlier
+   day-to-day entrypoint — most people won't run a console tool. `manage.py`
+   still exists for scripting/headless setup and both read/write the same
+   config file, so they're interchangeable.
 3. **Idle debounce, not per-keystroke.** Reset a timer on every
    text-changed event for the focused, allowlisted field; when the timer
    fires (default ~1s of no changes) without the field losing focus,
@@ -245,6 +248,34 @@ Windows' `RuntimeId` works — there's no macOS AX equivalent — so it builds
 a fingerprint from pid + role + subrole + bounding rect instead. Good
 enough for "did focus change," not a true identity check; worth
 revisiting if it turns out to misfire on some app.
+
+### Milestone 2 (tray app) — built, not yet validated
+
+`tray_app.py` + `core/settings_window.py` replace the console (`manage.py`)
+as the primary day-to-day interface: a `pystray` tray/menu-bar icon with
+Settings, Pause/Resume, and Quit, and a `tkinter` window for adding/
+removing watched apps and setting the API key (same detection flow as
+`manage.py add`, just triggered by a button instead of typed at a prompt).
+
+The watch loop itself was extracted from `agent.py` into
+`core/watch_loop.py` so both entrypoints share it — `agent.py` now just
+calls `watch_loop.run()` directly on the main thread (unchanged headless
+behavior), while `tray_app.py` runs it in a background thread controlled
+by `stop_event`/`pause_event`. The allowlist is re-read from disk every
+poll iteration specifically so changes made in the Settings window take
+effect immediately without restarting the loop.
+
+One real threading assumption here that couldn't be validated without a
+real GUI session: `on_settings()` spawns a background thread that builds
+and runs its own `tk.Tk()` + `mainloop()` (the same isolated-Tk-per-thread
+pattern `core/notifier.py`'s popups already use successfully) in response
+to a `pystray` menu click. This is a well-established pattern for
+combining the two libraries, but macOS in particular is stricter about
+which thread owns the GUI run loop than Windows is — if the Settings
+window doesn't open, or opens but behaves oddly, this is the first thing
+to suspect. A `_settings_lock` prevents two Settings windows (and two
+competing Tk mainloops) from opening at once, but doesn't address the
+main-thread question if that turns out to matter on macOS.
 
 ## Rough milestones
 
