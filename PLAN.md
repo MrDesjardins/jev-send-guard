@@ -39,12 +39,18 @@ of how accurate it is.
 
 ## Scope decisions for v1 (from the brainstorm this plan is based on)
 
-1. **Surface: Gmail compose only.** Not Slack, not Google Docs comments,
-   not a desktop app. One well-understood DOM to integrate against, one
-   set of send-gesture semantics (Ctrl+Enter, or clicking Send). Slack
-   and Docs are architecturally the same pattern (a content script per
-   site) but each needs its own selectors/send-gesture handling — treat
-   them as v2+, not part of getting the core loop right.
+1. **Surface: Gmail, Discord (web), and Google Docs comments.** Not
+   Slack (no bot needed here either, but not in scope yet), not a
+   desktop app. Each site gets its own thin adapter (DOM selectors + its
+   own send-gesture) on top of one shared core (pre-filter, Jev call,
+   nudge UI) — the adapter is the only part that's site-specific. Gmail
+   sends on Ctrl+Enter or a Send-button click; Discord sends on Enter
+   (Shift+Enter for a newline, the opposite convention from Gmail);
+   Google Docs' comment box sends on Ctrl+Enter or a Comment-button
+   click. Selectors for all three are best-effort from known DOM
+   patterns, not verified against a live browser session from this
+   environment — expect to need adjustment once actually tested in
+   Chrome.
 2. **Personal use only, not work email.** Sending draft message text to
    a third-party API before you've hit send is a real thing to be
    deliberate about, especially for anything under an employer's data

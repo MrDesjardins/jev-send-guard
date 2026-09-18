@@ -1,0 +1,28 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>Jev Send Guard — Settings</title>
+  <style>
+    body { font-family: system-ui, sans-serif; max-width: 420px; margin: 2rem auto; padding: 0 1rem; }
+    label { display: block; font-weight: 600; margin-bottom: 0.25rem; }
+    input { width: 100%; padding: 0.5rem; box-sizing: border-box; margin-bottom: 0.75rem; }
+    button { padding: 0.5rem 1rem; cursor: pointer; }
+    p.hint { color: #555; font-size: 0.85rem; }
+    p.status { font-weight: 600; }
+  </style>
+</head>
+<body>
+  <h2>Jev Send Guard</h2>
+  <label for="apiKey">TypeSafe API key</label>
+  <input id="apiKey" type="password" autocomplete="off" placeholder="apikey_..." />
+  <p class="hint">
+    Stored locally in this browser's extension storage. Never sent anywhere
+    except as the Authorization header on requests to
+    https://api.typesafe.ai.
+  </p>
+  <button id="save">Save</button>
+  <p id="status" class="status"></p>
+  <script src="options.js"></script>
+</body>
+</html>
