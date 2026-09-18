@@ -305,6 +305,41 @@ chat is by default (Discord especially) — if it over-fires, narrowing
 its instructions or raising just its own threshold is the fix, not
 lowering `NOUL_THRESHOLD` globally.
 
+### Popup lifecycle bug (2026-09-17): stale popups not replaced
+
+Reported bug: fixing a flagged message and getting a clean result showed
+the new "Looks good" checkmark *alongside* the old curt/impolite warning
+rather than replacing it — because the original `core/notifier.py` design
+gave every `notify()`/`notify_ok()` call its own throwaway `Tk()`
+interpreter on its own thread, with no tracking of what was already on
+screen.
+
+Rewritten to a single persistent Tk interpreter on one dedicated
+background thread for the process's lifetime, with `notify()`/`notify_ok()`
+just enqueueing a request onto a `queue.Queue()` that thread's mainloop
+polls every 50ms; each new request destroys whatever `Toplevel` is
+currently up before showing the new one. This is the standard correct
+pattern for driving a GUI toolkit from other threads (one thread owns the
+mainloop, everyone else talks to it via a thread-safe queue) — not just a
+fix for the reported bug, but a strictly more correct design than the
+original one-interpreter-per-popup approach regardless.
+
+Testing note, in the interest of not overclaiming: while building this,
+an attempt to verify it under Xvfb on this Linux dev box hit a real,
+reproducible crash (an Xlib/xcb assertion failure) — but further isolation
+showed the crash was inconsistent even for trivial single-threaded Tk
+code with no relation to this module's design (a bare recurring
+`root.after()` loop on the main thread passed once, then a slightly more
+complex main-thread-only Toplevel test crashed the same way). That points
+to this sandbox's particular Xvfb/libxcb setup being generally unreliable
+for validating `tkinter` here, not a specific finding about this code —
+Windows (GDI) and macOS (Cocoa) don't share Xlib's threading model at all,
+so this Linux-specific instability may not even apply to them. **Real
+verification of the popup-replacement behavior still needs to happen on
+an actual Windows or macOS session** — trigger two evaluations in a row
+(one flagged, one clean, or vice versa) and confirm only the latest popup
+is ever on screen.
+
 ## Rough milestones
 
 1. **Spike accessibility read on both OSes** — a throwaway script per
