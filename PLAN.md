@@ -373,6 +373,54 @@ it actually locates the address bar reliably across Chrome/Edge/Firefox,
 the same "built from the documented API shape, not yet run live" caveat
 as the rest of this project's Windows-specific accessibility code.
 
+### Milestone 4 (tests, tuning, stats, snooze, login install) — 2026-09-18
+
+A batch of improvements picked from a review of the whole system:
+
+- **Automated tests** (`tests/`, `pytest`): everything OS-independent now
+  has real coverage — pre-filter, idle debounce, config (allowlist, domain
+  normalization, question overrides), the Jev client's question-merging
+  and scoring (network mocked), and `watch_loop.py`'s actual decision
+  logic (allowlist matching, browser-host gating, password/read-only
+  skipping, pause) exercised via a new fake backend,
+  `platform_backends/mock.py`, implementing the same interface as
+  `windows.py`/`macos.py`. This is what would have caught the Windows
+  browser-host bug (above) automatically, before it ever shipped. 49
+  tests, all passing; run with `uv sync --extra dev && uv run pytest`.
+- **Per-app question tuning**: `core/config.py`'s `set_app_disabled_questions`
+  lets a specific app skip specific questions (e.g. turn off
+  `unprofessional` for a casual Discord server) without a global change.
+  Exposed via Settings' new "Edit selected" button.
+- **Global prompt configuration**: `core/jev_client.py`'s `QUESTIONS` are
+  now defaults, not the final word — `get_question_defs()` merges in
+  user overrides from `config.toml` (instructions, message, severity,
+  enabled/disabled), and `check_draft()` only asks Jev the
+  enabled-and-not-per-app-disabled questions, skipping the network call
+  entirely if none are active. Exposed via Settings' new "Configure
+  checks..." dialog, with a per-question "Reset to default." `QUESTIONS`
+  itself is never mutated, so "default" always means the original wording.
+- **Local usage stats** (`core/stats.py`, `~/.jev-send-guard/stats.json`):
+  counts real checks (pre-filter skips and failed/timed-out calls don't
+  count — they say nothing about threshold quality) and which question
+  flagged how often, surfaced as a summary in Settings. Purely local,
+  never sent anywhere; exists so "is `unprofessional` over-firing on
+  Discord" (a concern raised back in Milestone 3) becomes a number you
+  can check instead of a guess.
+- **Snooze**: the tray's Pause was previously indefinite-only; a
+  Snooze submenu (15/30/60 min, auto-resume via `threading.Timer`) was
+  added alongside it. Manually toggling Pause cancels any pending snooze
+  so a stale timer can't re-pause after a manual resume.
+- **Login-item installers** (`install/install.py`): a `schtasks`-based
+  Windows Task Scheduler logon task and a macOS launchd user agent plist,
+  so the tray app can actually run automatically instead of being
+  launched by hand every session. The plist-generation logic was verified
+  (valid XML, correct paths) with `subprocess.run` mocked out, but neither
+  installer has been run for real — same "needs an actual OS session"
+  caveat as everything else platform-specific here. Check
+  `schtasks /query /tn JevSendGuardTray` or `launchctl list | grep
+  jevsendguard` after installing, and confirm the tray icon actually
+  appears after a real logout/login, not just "no error was printed."
+
 ## Rough milestones
 
 1. **Spike accessibility read on both OSes** — a throwaway script per

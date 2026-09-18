@@ -32,6 +32,9 @@ pause_event = threading.Event()
 
 _settings_process = None
 
+_snooze_timer = None
+_snooze_lock = threading.Lock()
+
 
 def _make_icon_image(rgba):
     """A generated icon (filled circle) so there's no external asset file
@@ -87,7 +90,19 @@ def on_settings(icon, item):
     _settings_process = subprocess.Popen([sys.executable, str(settings_script)])
 
 
+def _cancel_snooze():
+    """Cancels any pending auto-resume timer. Called before any other
+    pause-state change so a stale snooze timer can never re-pause after a
+    manual resume, or fire early after a fresh snooze."""
+    global _snooze_timer
+    with _snooze_lock:
+        if _snooze_timer is not None:
+            _snooze_timer.cancel()
+            _snooze_timer = None
+
+
 def on_toggle_pause(icon, item):
+    _cancel_snooze()
     if pause_event.is_set():
         pause_event.clear()
         icon.icon = ICON_RUNNING
@@ -102,7 +117,29 @@ def _is_paused(item):
     return pause_event.is_set()
 
 
+def on_snooze(minutes):
+    def handler(icon, item):
+        global _snooze_timer
+        _cancel_snooze()
+        pause_event.set()
+        icon.icon = ICON_PAUSED
+        log.info("snoozed for %d minutes", minutes)
+
+        def resume():
+            pause_event.clear()
+            icon.icon = ICON_RUNNING
+            log.info("snooze ended, resumed")
+
+        with _snooze_lock:
+            _snooze_timer = threading.Timer(minutes * 60, resume)
+            _snooze_timer.daemon = True
+            _snooze_timer.start()
+
+    return handler
+
+
 def on_quit(icon, item):
+    _cancel_snooze()
     stop_event.set()
     icon.stop()
 
@@ -117,6 +154,14 @@ def main():
         menu=pystray.Menu(
             pystray.MenuItem("Settings...", on_settings),
             pystray.MenuItem("Paused", on_toggle_pause, checked=_is_paused),
+            pystray.MenuItem(
+                "Snooze",
+                pystray.Menu(
+                    pystray.MenuItem("15 minutes", on_snooze(15)),
+                    pystray.MenuItem("30 minutes", on_snooze(30)),
+                    pystray.MenuItem("60 minutes", on_snooze(60)),
+                ),
+            ),
             pystray.MenuItem("Quit", on_quit),
         ),
     )

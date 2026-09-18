@@ -5,6 +5,13 @@ importantly must never be the reason the tool feels unreliable or slows
 anything down. Originally ported from jevClient.js (curt/missing_ask);
 unprofessional/impolite were added later — see core/notifier.py for how
 each question's severity (warning vs error) maps to its popup styling.
+
+QUESTIONS below are the built-in defaults. A user can edit a question's
+instructions/message/severity, or disable it globally, from the Settings
+window's "Configure checks" section — those overrides live in
+config.toml (see core/config.py's get_question_overrides) and are merged
+onto these defaults by get_question_defs(), never mutating QUESTIONS
+itself, so "reset to default" is always just dropping the override.
 """
 
 import logging
@@ -13,6 +20,8 @@ import time
 from urllib.parse import urlparse
 
 import httpx
+
+from core import config
 
 log = logging.getLogger("jev-send-guard")
 
@@ -108,15 +117,28 @@ QUESTIONS = {
 }
 
 
+def get_question_defs():
+    """QUESTIONS merged with any user overrides from config.toml. Never
+    mutates QUESTIONS — an override only shadows fields for this lookup."""
+    overrides = config.get_question_overrides()
+    merged = {}
+    for key, base in QUESTIONS.items():
+        entry = dict(base)
+        entry["enabled"] = True
+        entry.update({k: v for k, v in overrides.get(key, {}).items() if v is not None})
+        merged[key] = entry
+    return merged
+
+
 def severity_of(question_key):
-    return QUESTIONS[question_key]["severity"]
+    return get_question_defs()[question_key]["severity"]
 
 
 def message_for(question_key):
-    return QUESTIONS[question_key]["message"]
+    return get_question_defs()[question_key]["message"]
 
 
-def _build_body(draft_text):
+def _build_body(draft_text, questions):
     return {
         "model": MODEL,
         "state": {"draft": draft_text},
@@ -126,17 +148,27 @@ def _build_body(draft_text):
                 "instructions": q["instructions"],
                 "criteria": q["criteria"],
             }
-            for key, q in QUESTIONS.items()
+            for key, q in questions.items()
         },
     }
 
 
-def check_draft(api_key, draft_text):
+def check_draft(api_key, draft_text, disabled_keys=None):
     """Returns a dict of {question_key: bool} (true = concern flagged) for
-    every key in QUESTIONS, or None ("no signal, treat as no concerns") on
-    any failure."""
+    every enabled, not-per-app-disabled question, or None ("no signal,
+    treat as no concerns") on any failure. `disabled_keys` is the current
+    app's per-app overrides (core/config.py's disabled_questions)."""
     if not api_key:
         return None
+
+    disabled_keys = set(disabled_keys or ())
+    active_questions = {
+        key: q
+        for key, q in get_question_defs().items()
+        if q.get("enabled", True) and key not in disabled_keys
+    }
+    if not active_questions:
+        return {}
 
     dns_start = time.monotonic()
     try:
@@ -153,7 +185,7 @@ def check_draft(api_key, draft_text):
                 "Authorization": f"Bearer {api_key}",
                 "Content-Type": "application/json",
             },
-            json=_build_body(draft_text),
+            json=_build_body(draft_text, active_questions),
             timeout=TIMEOUT_SEC,
         )
     except httpx.HTTPError as e:
@@ -189,7 +221,7 @@ def check_draft(api_key, draft_text):
         return None
 
     result = {}
-    for key in QUESTIONS:
+    for key in active_questions:
         score = (answers.get(key) or {}).get("noul")
         score = score if isinstance(score, (int, float)) else 0
         result[key] = score >= NOUL_THRESHOLD
