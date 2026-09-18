@@ -71,7 +71,9 @@ def run(stop_event, pause_event=None):
     idle_watcher = IdleWatcher()
     last_runtime_id = None
     last_logged_text = object()  # sentinel, never equal to a real text value
+    last_evaluated_signature = None
     was_watched = False
+    had_focused_control = True
 
     while not stop_event.is_set():
         if pause_event is not None and pause_event.is_set():
@@ -80,8 +82,24 @@ def run(stop_event, pause_event=None):
 
         control = backend.get_focused_control()
         if control is None:
+            if had_focused_control:
+                active_process = None
+                get_active_app = getattr(backend, "get_focused_application", None)
+                if get_active_app is not None:
+                    active_app = get_active_app()
+                    active_process = backend.get_process_name(
+                        backend.get_process_id(active_app)
+                    )
+                log.debug(
+                    "no focused accessibility control (active app=%r)",
+                    active_process,
+                )
+                had_focused_control = False
             time.sleep(POLL_INTERVAL_SEC)
             continue
+        if not had_focused_control:
+            log.debug("focused accessibility control became available")
+            had_focused_control = True
 
         runtime_id = backend.safe_runtime_id(control)
         focus_changed = runtime_id != last_runtime_id
@@ -92,39 +110,69 @@ def run(stop_event, pause_event=None):
 
         process_name = backend.get_process_name(backend.get_process_id(control))
         current_apps = config.list_apps()
-        watched = bool(process_name) and config.is_watched(process_name, {"apps": current_apps})
+        active_host = None
+        get_active_browser_host = getattr(backend, "get_active_browser_host", None)
+        if (
+            get_active_browser_host is not None
+            and config.app_requires_browser_host(process_name)
+        ):
+            active_host = get_active_browser_host(process_name)
+        watched = bool(process_name) and config.is_watched(
+            process_name, domain=active_host, config={"apps": current_apps}
+        )
 
         if focus_changed:
             log.debug(
-                "focus -> process=%r watched=%s runtime_id=%r",
-                process_name, watched, runtime_id,
+                "focus -> process=%r host=%r watched=%s runtime_id=%r",
+                process_name, active_host, watched, runtime_id,
             )
 
         if not watched:
             if was_watched:
                 log.debug("focus left watched app")
+                notifier.dismiss()
             was_watched = False
             time.sleep(POLL_INTERVAL_SEC)
             continue
         was_watched = True
 
         if backend.is_password_field(control):
-            log.debug("skip: password/secure field")
+            # The loop polls continuously. Log a rejection when focus enters
+            # the field, not once per poll while it remains there.
+            if focus_changed:
+                log.debug("skip: password/secure field")
+            time.sleep(POLL_INTERVAL_SEC)
+            continue
+
+        is_writable = getattr(backend, "is_writable_text_control", None)
+        if is_writable is not None and not is_writable(control):
+            if focus_changed:
+                log.debug("skip: non-editor, read-only, or implausibly sized text control")
+            idle_watcher.reset()
+            notifier.dismiss()
             time.sleep(POLL_INTERVAL_SEC)
             continue
 
         text = backend.get_control_text(control)
         if text != last_logged_text:
             log.debug("text read: %s", _preview(text))
+            notifier.dismiss()
             last_logged_text = text
 
         idle_watcher.observe(text)
 
         due_text = idle_watcher.due()
         if due_text is not None:
+            evaluation_signature = (process_name, runtime_id, due_text)
+            if evaluation_signature == last_evaluated_signature:
+                if focus_changed:
+                    log.debug("skip: unchanged draft was already evaluated before refocus")
+                time.sleep(POLL_INTERVAL_SEC)
+                continue
             log.info("idle threshold reached, evaluating: %s", _preview(due_text))
             anchor_rect = backend.get_bounding_rect(control)
             handle_draft(due_text, key, anchor_rect)
+            last_evaluated_signature = evaluation_signature
 
         time.sleep(POLL_INTERVAL_SEC)
 

@@ -20,10 +20,9 @@ and why.
 - **macOS**: built to the same interface as Windows (`platform_backends/
   macos.py`) but not yet run against a live session — see `PLAN.md`'s
   "Milestone 1b" for what specifically needs validating.
-- **Tray app** (`tray_app.py`): built on both platforms, not yet run
-  against a live session either — see `PLAN.md`'s "Milestone 2" for the
-  one threading assumption (opening a `tkinter` window from a `pystray`
-  menu callback) worth checking first if Settings doesn't open cleanly.
+- **Tray app** (`tray_app.py`): runs Settings separately on macOS because
+  Cocoa and Tk cannot safely own one interpreter's GUI event loop. Draft
+  results use native non-activating popups near the editor, preserving focus.
 
 ## Setup
 
@@ -50,6 +49,21 @@ uv run tray_app.py
 Click the icon for **Settings...** (add/remove watched apps, set the API
 key — nothing is watched until you add at least one app; the default
 allowlist is empty), **Paused** (toggle), and **Quit**.
+
+### Browsers are website-scoped
+
+When Settings detects Chrome, Firefox, Edge, or Chromium, it asks for
+one exact website host (for example `docs.google.com`). A browser is never
+watched across every site: while `roblox.glean.com` is active, a
+`docs.google.com` rule is inactive. Re-add the same browser to add another
+explicit host; its host rules are merged.
+
+On macOS, the guard asks the system for Automation permission to read the
+active tab URL from the browser, immediately discarding everything except its
+hostname. No browser extension is installed and no browser page content,
+title, path, or query string is read for this purpose. If Automation is
+unavailable or denied, browser checks stay disabled rather than falling back
+to app-wide monitoring.
 
 A headless/console alternative also exists, for scripting or if you'd
 rather not have a tray icon:
@@ -84,7 +98,7 @@ core/                        Pure Python, OS-agnostic
   notifier.py                          The popup, anchored to the field's bounding rect
   settings_window.py                     Tkinter Settings window, opened from the tray icon
   api_key.py                                OS credential store via `keyring`
-  config.py                                   The watched-app allowlist (~/.jev-send-guard/config.toml)
+  config.py                                   App/domain allowlist (~/.jev-send-guard/config.toml)
   logging_setup.py                              Shared logging config (console + file)
 
 platform_backends/

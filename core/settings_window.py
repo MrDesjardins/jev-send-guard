@@ -1,10 +1,9 @@
 """Tkinter settings window: the GUI equivalent of manage.py's add/list/
-remove/set-key commands, for people who'd rather not use a console. Opened
-from the tray icon's "Settings..." menu item (see tray_app.py).
+remove/set-key commands, for people who'd rather not use a console. Launched
+by the tray icon's "Settings..." menu item (see tray_app.py).
 
-Builds and runs its own Tk root + mainloop, the same pattern
-core/notifier.py already uses for popups — each call is a fresh, isolated
-Tk interpreter on whatever thread calls it, not a shared/global one.
+Builds and runs its own Tk root + mainloop. On macOS, `settings_app.py`
+launches this in a separate process from the Cocoa-based tray application.
 """
 
 import logging
@@ -54,7 +53,14 @@ def open_settings_window(on_change=None):
     def refresh_list():
         listbox.delete(0, tk.END)
         for app in config.list_apps():
-            listbox.insert(tk.END, f"{app['label']}  ({app['process_name']})")
+            domains = app.get("domains")
+            if domains:
+                scope = f" @ {', '.join(domains)}"
+            elif config.is_browser_process(app["process_name"]):
+                scope = " @ host required (inactive)"
+            else:
+                scope = ""
+            listbox.insert(tk.END, f"{app['label']}  ({app['process_name']}){scope}")
 
     refresh_list()
 
@@ -89,26 +95,17 @@ def open_settings_window(on_change=None):
         add_status_var.set("Waiting for you to type in the target app...")
         root.update_idletasks()
 
-        result_holder = {}
-
         def detect():
             try:
-                result_holder["detected"] = backend.run_add_flow(
+                return backend.run_add_flow(
                     prompt=lambda _msg: None, output=lambda _msg: None
                 )
             except Exception:
                 log.exception("add-app detection failed")
-                result_holder["detected"] = None
+                return None
 
-        thread = threading.Thread(target=detect, daemon=True)
-        thread.start()
-
-        def poll():
-            if thread.is_alive():
-                root.after(200, poll)
-                return
+        def finish_detection(detected):
             add_status_var.set("")
-            detected = result_holder.get("detected")
             if not detected:
                 messagebox.showwarning(
                     "Nothing detected",
@@ -116,6 +113,24 @@ def open_settings_window(on_change=None):
                     parent=root,
                 )
                 return
+            domains = None
+            if config.is_browser_process(detected["process_name"]):
+                domain = simpledialog.askstring(
+                    "Allow one website",
+                    "This is a browser, so it must be limited to one website.\n\n"
+                    "Enter an exact host or URL, e.g. docs.google.com:",
+                    parent=root,
+                )
+                normalized_domain = config.normalize_domain(domain)
+                if normalized_domain is None:
+                    messagebox.showwarning(
+                        "Browser not added",
+                        "Enter a valid website host. The guard never watches every "
+                        "page in a browser.",
+                        parent=root,
+                    )
+                    return
+                domains = [normalized_domain]
             label = simpledialog.askstring(
                 "Label this app",
                 f"Detected process: {detected['process_name']}\n\n"
@@ -124,10 +139,44 @@ def open_settings_window(on_change=None):
             )
             if not label:
                 label = detected["process_name"]
-            config.add_app(label=label, process_name=detected["process_name"])
+            config.add_app(
+                label=label,
+                process_name=detected["process_name"],
+                domains=domains,
+            )
+            if domains:
+                messagebox.showinfo(
+                    "Browser limited to one website",
+                    "The guard is limited to " + domains[0] + ".\n\n"
+                    "On macOS, allow the system Automation prompt so the guard can "
+                    "read the active tab hostname. No browser extension is used.",
+                    parent=root,
+                )
             refresh_list()
             if on_change:
                 on_change()
+
+        if sys.platform == "darwin":
+            # AX queries can return kAXErrorCannotComplete from a Tk worker
+            # thread on macOS. Running this small, finite selection flow on
+            # Tk's main thread is reliable; the user can still Cmd-Tab to the
+            # target app while the Settings window waits.
+            root.after(100, lambda: finish_detection(detect()))
+            return
+
+        result_holder = {}
+
+        def detect_in_thread():
+            result_holder["detected"] = detect()
+
+        thread = threading.Thread(target=detect_in_thread, daemon=True)
+        thread.start()
+
+        def poll():
+            if thread.is_alive():
+                root.after(200, poll)
+                return
+            finish_detection(result_holder.get("detected"))
 
         root.after(200, poll)
 

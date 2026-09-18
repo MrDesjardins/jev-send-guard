@@ -9,18 +9,20 @@ Requires the same setup as agent.py: `uv sync --extra windows` or
 opens, or `manage.py add`), and an API key set (ditto, or `manage.py
 set-key`).
 
-NOTE: this hasn't been run against a real Windows or macOS session yet —
-see PLAN.md for the specific threading assumption that needs validating
-first (opening a Tk settings window from a pystray menu callback thread).
+On macOS, Settings and draft-result popups run in helper processes because
+Tk and pystray's Cocoa event loop cannot safely share one interpreter.
 """
 
+import subprocess
 import sys
 import threading
+from pathlib import Path
 
 from PIL import Image, ImageDraw
 
+from core import api_key as api_key_store
+from core import config
 from core.logging_setup import setup_logging
-from core.settings_window import open_settings_window
 from core.watch_loop import run as run_watch_loop
 
 log = setup_logging()
@@ -28,9 +30,7 @@ log = setup_logging()
 stop_event = threading.Event()
 pause_event = threading.Event()
 
-# Guards against opening a second Settings window (and therefore a second,
-# competing Tk mainloop) while one is already up.
-_settings_lock = threading.Lock()
+_settings_process = None
 
 
 def _make_icon_image(rgba):
@@ -49,20 +49,42 @@ ICON_PAUSED = _make_icon_image((154, 160, 166, 255))  # gray
 
 
 def start_watch_thread():
-    thread = threading.Thread(target=run_watch_loop, args=(stop_event, pause_event), daemon=True)
+    def watch():
+        last_wait_reason = None
+        while not stop_event.is_set():
+            if not config.list_apps():
+                reason = "No apps are being watched. Add one from the tray Settings."
+            elif not api_key_store.get_api_key():
+                reason = "No API key set. Set one from the tray Settings."
+            else:
+                reason = None
+
+            if reason is not None:
+                if reason != last_wait_reason:
+                    log.error(reason)
+                    last_wait_reason = reason
+                stop_event.wait(2)
+                continue
+
+            last_wait_reason = None
+            if run_watch_loop(stop_event, pause_event) == 0:
+                return
+            stop_event.wait(2)
+
+    thread = threading.Thread(target=watch, daemon=True)
     thread.start()
 
 
 def on_settings(icon, item):
-    def show():
-        if not _settings_lock.acquire(blocking=False):
-            return  # already open
-        try:
-            open_settings_window()
-        finally:
-            _settings_lock.release()
-
-    threading.Thread(target=show, daemon=True).start()
+    # Tk and Cocoa each require ownership of the macOS GUI event loop. Running
+    # Tk in this process after pystray starts Cocoa crashes in Tcl/Tk, so the
+    # Settings UI gets its own Python process. Config and keychain storage are
+    # shared with the tray app.
+    global _settings_process
+    if _settings_process is not None and _settings_process.poll() is None:
+        return
+    settings_script = Path(__file__).with_name("settings_app.py")
+    _settings_process = subprocess.Popen([sys.executable, str(settings_script)])
 
 
 def on_toggle_pause(icon, item):
@@ -98,7 +120,13 @@ def main():
             pystray.MenuItem("Quit", on_quit),
         ),
     )
-    icon.run(setup=lambda icon: start_watch_thread())
+    def setup(icon):
+        # pystray icons start hidden. Passing a custom setup callback replaces
+        # its default callback, which would otherwise set this for us.
+        icon.visible = True
+        start_watch_thread()
+
+    icon.run(setup=setup)
 
 
 if __name__ == "__main__":

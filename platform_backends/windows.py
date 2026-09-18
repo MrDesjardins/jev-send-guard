@@ -7,6 +7,7 @@ promoted from (Milestone 1) — that file still exists standalone for quick
 manual poking, but manage.py and the real agent should import from here.
 """
 
+import os
 import sys
 import time
 
@@ -20,6 +21,9 @@ import uiautomation as auto  # noqa: E402
 # `uiautomation` package exposes a friendly attribute for it, and getting
 # this right matters: secure fields must never be read, allowlist or not.
 UIA_IS_PASSWORD_PROPERTY_ID = 30019
+UIA_VALUE_IS_READ_ONLY_PROPERTY_ID = 30046
+MAX_EDITOR_HEIGHT = 400
+MIN_EDITOR_HEIGHT = 12
 
 ZERO_WIDTH_CHARS = "﻿​‌‍"
 
@@ -41,6 +45,21 @@ def is_password_field(control):
         return bool(control.GetPropertyValue(UIA_IS_PASSWORD_PROPERTY_ID))
     except Exception:
         return False
+
+
+def is_writable_text_control(control):
+    """Reject read-only and window-sized text areas before draft analysis."""
+    try:
+        if control.GetPropertyValue(UIA_VALUE_IS_READ_ONLY_PROPERTY_ID) is True:
+            return False
+        rect = control.BoundingRectangle
+        if rect:
+            height = rect.bottom - rect.top
+            if height < MIN_EDITOR_HEIGHT or height > MAX_EDITOR_HEIGHT:
+                return False
+    except Exception:
+        pass
+    return True
 
 
 def get_text_by_walking_children(control, max_depth=8):
@@ -210,6 +229,11 @@ def run_add_flow(prompt=input, output=print):
 
         text = get_control_text(control)
         if not _is_effectively_empty(text):
+            # Never add the Settings/CLI process itself when one of its own
+            # fields receives focus during the add flow.
+            if control.ProcessId == os.getpid():
+                time.sleep(POLL_INTERVAL_SEC)
+                continue
             process_name = get_process_name(control.ProcessId)
             if not process_name:
                 time.sleep(POLL_INTERVAL_SEC)
