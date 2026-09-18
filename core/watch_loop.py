@@ -175,7 +175,12 @@ def run(stop_event, pause_event=None, backend=None):
                 continue
             log.info("idle threshold reached, evaluating: %s", _preview(due_text))
             anchor_rect = backend.get_bounding_rect(control)
-            matched_app = config.get_app(process_name)
+            # Reuse current_apps (already read above for the watched-check)
+            # instead of a second, redundant config.toml read via get_app().
+            matched_app = next(
+                (a for a in current_apps if a["process_name"].lower() == process_name.lower()),
+                None,
+            )
             disabled_questions = set((matched_app or {}).get("disabled_questions", []))
             handle_draft(due_text, key, anchor_rect, disabled_questions)
             last_evaluated_signature = evaluation_signature

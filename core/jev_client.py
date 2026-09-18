@@ -117,11 +117,23 @@ QUESTIONS = {
 }
 
 
+_VALID_SEVERITIES = {"error", "warning"}
+
+
 def get_question_defs():
     """QUESTIONS merged with any user overrides from config.toml, plus any
     fully custom user-added questions. Never mutates QUESTIONS — an
     override only shadows fields for this lookup, and a custom question
-    exists only in config.toml with no code-level default at all."""
+    exists only in config.toml with no code-level default at all.
+
+    Severity is clamped to a known value here, once, centrally — a
+    hand-edited config.toml (or a future bug) could otherwise put a bad
+    string in front of core/notifier.py's dict-keyed lookup, which would
+    raise inside a tkinter callback Tk swallows silently: the concern
+    would be correctly detected and counted, but the popup would just
+    never appear. Defaulting to "warning" (the less alarming severity) is
+    the safe fail-closed choice for unrecognized data.
+    """
     overrides = config.get_question_overrides()
     merged = {}
     for key, base in QUESTIONS.items():
@@ -133,6 +145,9 @@ def get_question_defs():
         entry = dict(custom_q)
         entry.setdefault("enabled", True)
         merged[key] = entry
+    for entry in merged.values():
+        if entry.get("severity") not in _VALID_SEVERITIES:
+            entry["severity"] = "warning"
     return merged
 
 

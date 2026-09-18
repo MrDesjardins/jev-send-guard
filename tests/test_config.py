@@ -88,6 +88,19 @@ def test_per_app_disabled_questions():
     assert app["disabled_questions"] == ["unprofessional"]
 
 
+def test_readding_an_app_preserves_its_disabled_questions():
+    # Regression: add_app used to only preserve a browser's domains when
+    # re-adding an already-watched app, silently dropping any per-app
+    # question tuning set via "Edit selected" in the process.
+    config.add_app(label="Discord messages", process_name="Discord.exe")
+    config.set_app_disabled_questions("Discord.exe", ["unprofessional"])
+
+    config.add_app(label="Discord messages", process_name="Discord.exe")
+
+    app = config.get_app("Discord.exe")
+    assert app["disabled_questions"] == ["unprofessional"]
+
+
 def test_get_app_returns_none_for_unknown_process():
     assert config.get_app("Nope.exe") is None
 
