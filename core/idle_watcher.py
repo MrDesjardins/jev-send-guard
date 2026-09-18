@@ -6,7 +6,9 @@ backend so it can be unit-tested without a real accessibility API.
 
 import time
 
-IDLE_SECONDS = 1.0
+# A short pause feels responsive while still avoiding a request on every
+# keystroke. Polling occurs every 0.3 seconds, so this is effectively 0.6–0.9s.
+IDLE_SECONDS = 0.6
 
 
 class IdleWatcher:

@@ -38,13 +38,30 @@ def cmd_add(args):
     print(f"\nDetected: process={process_name!r}"
           + (f", field={hint!r}" if hint else ""))
 
+    domains = None
+    if config.is_browser_process(process_name):
+        raw_domain = input(
+            "Browser detected. Enter the one website host to allow "
+            "(for example docs.google.com): "
+        )
+        domain = config.normalize_domain(raw_domain)
+        if domain is None:
+            print("Invalid host. Browser was not added; it cannot be enabled for every page.")
+            return 1
+        domains = [domain]
+
     label = input("Give this a short label (2-3 words), e.g. "
                    "'Discord messages': ").strip()
     if not label:
         label = process_name
 
-    config.add_app(label=label, process_name=process_name)
+    config.add_app(label=label, process_name=process_name, domains=domains)
     print(f"Added {label!r} ({process_name}) to the watch list.")
+    if domains:
+        print(
+            "On macOS, allow the system Automation prompt so the guard can "
+            "read the active tab hostname. No browser extension is used."
+        )
     return 0
 
 
@@ -54,7 +71,14 @@ def cmd_list(args):
         print("No apps are being watched yet. Run `manage.py add` to add one.")
         return 0
     for app in apps:
-        print(f"- {app['label']}  ({app['process_name']})")
+        domains = app.get("domains")
+        if domains:
+            scope = f" @ {', '.join(domains)}"
+        elif config.is_browser_process(app["process_name"]):
+            scope = " @ host required (inactive)"
+        else:
+            scope = ""
+        print(f"- {app['label']}  ({app['process_name']}){scope}")
     return 0
 
 

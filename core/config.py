@@ -6,6 +6,16 @@ Config lives at ~/.jev-send-guard/config.toml. Format:
     label = "Discord messages"
     process_name = "Discord.exe"
 
+Browser entries additionally carry an explicit list of allowed hosts:
+
+    [[apps]]
+    label = "Google Docs"
+    process_name = "Google Chrome"
+    domains = ["docs.google.com"]
+
+Browser processes without a host rule are deliberately not watched. This
+keeps a browser allowlist from becoming an allowlist for every website.
+
 Default is an empty list — nothing is watched until the user explicitly
 adds an app via `manage.py add`. See PLAN.md's non-goals: this boundary
 is deliberate, not an oversight.
@@ -13,6 +23,7 @@ is deliberate, not an oversight.
 
 import sys
 from pathlib import Path
+from urllib.parse import urlsplit
 
 if sys.version_info >= (3, 11):
     import tomllib
@@ -23,6 +34,15 @@ import tomli_w
 
 CONFIG_DIR = Path.home() / ".jev-send-guard"
 CONFIG_PATH = CONFIG_DIR / "config.toml"
+
+_BROWSER_PROCESS_NAMES = {
+    "chrome",
+    "google chrome",
+    "chromium",
+    "microsoft edge",
+    "msedge",
+    "firefox",
+}
 
 
 def load_config():
@@ -40,15 +60,64 @@ def save_config(config):
         tomli_w.dump(config, f)
 
 
+def _process_key(process_name):
+    return process_name.lower().removesuffix(".exe")
+
+
+def is_browser_process(process_name):
+    """Whether a process needs an active-tab host before it may be watched."""
+    return bool(process_name) and _process_key(process_name) in _BROWSER_PROCESS_NAMES
+
+
+def normalize_domain(value):
+    """Return a normalized exact hostname, accepting either a host or URL."""
+    if not isinstance(value, str):
+        return None
+    value = value.strip()
+    if not value or any(char.isspace() for char in value):
+        return None
+    parsed = urlsplit(value if "://" in value else f"//{value}")
+    if parsed.username or parsed.password:
+        return None
+    hostname = parsed.hostname
+    if not hostname or hostname.endswith("."):
+        return None
+    try:
+        return hostname.encode("idna").decode("ascii").lower()
+    except UnicodeError:
+        return None
+
+
 def list_apps():
     return load_config().get("apps", [])
 
 
-def add_app(label, process_name):
-    """Adds or replaces (by process_name, case-insensitive) a watched app."""
+def add_app(label, process_name, domains=None):
+    """Adds or replaces a watched app.
+
+    Re-adding a browser merges its host rules, so one browser can safely
+    watch both Gmail and Google Docs without broadening to every website.
+    """
+    normalized_domains = []
+    for domain in domains or []:
+        normalized = normalize_domain(domain)
+        if normalized and normalized not in normalized_domains:
+            normalized_domains.append(normalized)
+
     config = load_config()
+    previous = next(
+        (app for app in config["apps"] if app["process_name"].lower() == process_name.lower()),
+        None,
+    )
     apps = [a for a in config["apps"] if a["process_name"].lower() != process_name.lower()]
-    apps.append({"label": label, "process_name": process_name})
+    entry = {"label": label, "process_name": process_name}
+    if is_browser_process(process_name):
+        for domain in (previous or {}).get("domains", []):
+            normalized = normalize_domain(domain)
+            if normalized and normalized not in normalized_domains:
+                normalized_domains.append(normalized)
+        entry["domains"] = normalized_domains
+    apps.append(entry)
     config["apps"] = apps
     save_config(config)
 
@@ -68,7 +137,35 @@ def remove_app(identifier):
     return before - len(config["apps"])
 
 
-def is_watched(process_name, config=None):
+def is_watched(process_name, domain=None, config=None):
+    """Whether this focused control is inside an allowed app/site.
+
+    Browser host rules are exact-match only. A missing or stale tab host must
+    never make a browser eligible for draft reading.
+    """
+    # Preserve the former ``is_watched(process_name, config)`` call shape for
+    # small scripts using this module directly.
+    if config is None and isinstance(domain, dict):
+        config, domain = domain, None
     config = config or load_config()
     process_name = process_name.lower()
-    return any(a["process_name"].lower() == process_name for a in config["apps"])
+    app = next(
+        (a for a in config["apps"] if a["process_name"].lower() == process_name),
+        None,
+    )
+    if app is None:
+        return False
+    if not is_browser_process(app["process_name"]):
+        return True
+    normalized_domain = normalize_domain(domain)
+    allowed_domains = {
+        normalized
+        for value in app.get("domains", [])
+        if (normalized := normalize_domain(value))
+    }
+    return normalized_domain in allowed_domains
+
+
+def app_requires_browser_host(process_name):
+    """True for known browser processes, including legacy hostless entries."""
+    return is_browser_process(process_name)

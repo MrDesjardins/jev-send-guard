@@ -20,23 +20,20 @@ is currently up — otherwise a fixed "curt/impolite" warning could stay on
 screen indefinitely while a later clean result's checkmark shows up
 alongside it.
 
-Architecture note (this replaced an earlier, broken version of this
-module): a single persistent Tk interpreter runs on one dedicated
-background thread for the whole process's lifetime; every call to
-notify()/notify_ok() just enqueues a request that thread's mainloop picks
-up. The earlier version instead created a brand new Tk() interpreter per
-popup, each on its own throwaway thread — this is NOT safe: concurrent
-independent Tk/Tcl interpreters sharing the same display connection
-crashed the process outright under real testing (an Xlib assertion
-failure, reproduced under Xvfb). One interpreter, one thread, one mainloop
-avoids that entirely, and also makes "replace the current popup" a plain
-same-thread Toplevel.destroy() instead of the fragile cross-thread
-signaling the first fix attempt needed.
+Architecture note: Windows uses one persistent Tk interpreter on a dedicated
+UI thread, and each new request replaces the current popup. macOS uses a
+separate helper containing a native non-activating AppKit panel: a Tk popup
+helper becomes the active app and steals keyboard focus from the message being
+composed.
 """
 
+import json
 import logging
 import queue
+import subprocess
+import sys
 import threading
+from pathlib import Path
 import tkinter as tk
 
 log = logging.getLogger("jev-send-guard")
@@ -57,6 +54,8 @@ _SEVERITY_STYLE = {
 _request_queue = queue.Queue()
 _start_lock = threading.Lock()
 _started = False
+_popup_process = None
+_popup_process_lock = threading.Lock()
 
 
 def _position(win, anchor_rect):
@@ -158,7 +157,7 @@ def _run_ui_thread():
 
     state = {"popup": None}
 
-    def replace_popup(build_content, anchor_rect, auto_dismiss_ms):
+    def dismiss_popup():
         if state["popup"] is not None:
             try:
                 state["popup"].destroy()
@@ -166,7 +165,13 @@ def _run_ui_thread():
                 pass
             state["popup"] = None
 
+    def replace_popup(build_content, anchor_rect, auto_dismiss_ms):
+        dismiss_popup()
+
         win = tk.Toplevel(root)
+        # Configure the native window before mapping it, so Windows does not
+        # activate the editor popup and steal the typing caret.
+        win.withdraw()
         win.overrideredirect(True)
         win.attributes("-topmost", True)
         try:
@@ -189,6 +194,8 @@ def _run_ui_thread():
         win.bind("<Button-1>", dismiss)
 
         _position(win, anchor_rect)
+        _make_non_activating_on_windows(win)
+        win.deiconify()
         win.after(auto_dismiss_ms, dismiss)
 
         state["popup"] = win
@@ -197,7 +204,10 @@ def _run_ui_thread():
         try:
             while True:
                 build_content, anchor_rect, auto_dismiss_ms = _request_queue.get_nowait()
-                replace_popup(build_content, anchor_rect, auto_dismiss_ms)
+                if build_content is None:
+                    dismiss_popup()
+                else:
+                    replace_popup(build_content, anchor_rect, auto_dismiss_ms)
         except queue.Empty:
             pass
         root.after(50, poll_queue)
@@ -214,6 +224,27 @@ def _ensure_started():
             _started = True
 
 
+def _make_non_activating_on_windows(win):
+    """Give a Tk popup WS_EX_NOACTIVATE so it never takes editor focus."""
+    if sys.platform != "win32":
+        return
+    try:
+        import ctypes
+
+        GWL_EXSTYLE = -20
+        WS_EX_NOACTIVATE = 0x08000000
+        user32 = ctypes.windll.user32
+        hwnd = win.winfo_id()
+        style = user32.GetWindowLongW(hwnd, GWL_EXSTYLE)
+        user32.SetWindowLongW(hwnd, GWL_EXSTYLE, style | WS_EX_NOACTIVATE)
+        user32.SetWindowPos(
+            hwnd, 0, 0, 0, 0, 0,
+            0x0001 | 0x0002 | 0x0004 | 0x0010 | 0x0020,
+        )  # NOSIZE | NOMOVE | NOZORDER | NOACTIVATE | FRAMECHANGED
+    except Exception:
+        log.exception("could not make Windows popup non-activating")
+
+
 def _enqueue(build_content, anchor_rect, auto_dismiss_ms):
     try:
         _ensure_started()
@@ -222,17 +253,64 @@ def _enqueue(build_content, anchor_rect, auto_dismiss_ms):
         log.exception("notifier enqueue failed")
 
 
+def _show_macos_panel(kind, items, anchor_rect, auto_dismiss_ms):
+    """Show a native, non-activating popup near the focused control."""
+    global _popup_process
+    payload = json.dumps(
+        {
+            "kind": kind,
+            "items": items,
+            "anchor_rect": anchor_rect,
+            "auto_dismiss_ms": auto_dismiss_ms,
+        }
+    )
+    helper = Path(__file__).resolve().parents[1] / "notification_app.py"
+    try:
+        with _popup_process_lock:
+            if _popup_process is not None and _popup_process.poll() is None:
+                _popup_process.terminate()
+            _popup_process = subprocess.Popen(
+                [sys.executable, str(helper), payload],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+            log.debug("started macOS popup helper pid=%s", _popup_process.pid)
+    except OSError:
+        log.exception("macOS popup helper failed")
+
+
+def dismiss():
+    """Remove the current popup as soon as the user resumes typing."""
+    global _popup_process
+    if sys.platform != "darwin":
+        # The Windows UI thread owns Tk, so request destruction through its
+        # queue instead of touching its windows across threads.
+        if _started:
+            _request_queue.put((None, None, None))
+        return
+    with _popup_process_lock:
+        if _popup_process is not None and _popup_process.poll() is None:
+            _popup_process.terminate()
+        _popup_process = None
+
+
 def notify(items, anchor_rect=None):
     """Fire-and-forget: enqueues the concerns popup for the UI thread to
     show, replacing whatever's currently up. `items` is a list of
     (message, severity) tuples, severity being "error" or "warning".
     `anchor_rect` is the focused control's (left, top, right, bottom) in
     screen coordinates."""
-    _enqueue(_build_concerns(items), anchor_rect, 8000)
+    if sys.platform == "darwin":
+        _show_macos_panel("concerns", items, anchor_rect, 8000)
+    else:
+        _enqueue(_build_concerns(items), anchor_rect, 8000)
 
 
 def notify_ok(anchor_rect=None):
     """Brief green checkmark confirming a check ran and found nothing —
     the "clean" counterpart to notify(), so silence never has to be
     interpreted as either outcome. Also replaces whatever's currently up."""
-    _enqueue(_build_ok(), anchor_rect, 2500)
+    if sys.platform == "darwin":
+        _show_macos_panel("ok", [], anchor_rect, 2500)
+    else:
+        _enqueue(_build_ok(), anchor_rect, 2500)
