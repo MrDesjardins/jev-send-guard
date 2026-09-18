@@ -19,6 +19,26 @@ keeps a browser allowlist from becoming an allowlist for every website.
 Default is an empty list — nothing is watched until the user explicitly
 adds an app via `manage.py add`. See PLAN.md's non-goals: this boundary
 is deliberate, not an oversight.
+
+Question tuning also lives here, under two separate tables:
+
+    [questions.unprofessional]
+    enabled = false
+
+    [custom_questions.overpromising]
+    instructions = "..."
+    message = "This might be overpromising."
+    severity = "warning"
+    criteria = { true = "...", false = "..." }
+    enabled = true
+
+`questions` holds *overrides* on the four built-in questions defined in
+core/jev_client.py's QUESTIONS (edit wording/severity/enabled without
+touching the code defaults — "Reset to default" just deletes the entry
+here). `custom_questions` holds fully user-defined questions beyond the
+built-in four — deleting one removes it outright, since there's no
+code-level default to fall back to. Both are merged by
+core/jev_client.py's get_question_defs().
 """
 
 import sys
@@ -220,3 +240,46 @@ def reset_question_override(key):
         del questions[key]
         config["questions"] = questions
         save_config(config)
+
+
+def list_custom_questions():
+    """Fully user-defined questions beyond the built-in four. See
+    core/jev_client.py's get_question_defs(), which merges these in."""
+    return load_config().get("custom_questions", {})
+
+
+def add_custom_question(key, instructions, message, severity="warning"):
+    config = load_config()
+    custom = config.setdefault("custom_questions", {})
+    custom[key] = {
+        "instructions": instructions,
+        "message": message,
+        "severity": severity,
+        "criteria": {
+            "true": "This is a concern.",
+            "false": "This is not a concern.",
+        },
+        "enabled": True,
+    }
+    save_config(config)
+
+
+def update_custom_question(key, **fields):
+    config = load_config()
+    custom = config.get("custom_questions", {})
+    if key not in custom:
+        return
+    custom[key].update({k: v for k, v in fields.items() if v is not None})
+    config["custom_questions"] = custom
+    save_config(config)
+
+
+def remove_custom_question(key):
+    config = load_config()
+    custom = config.get("custom_questions", {})
+    if key in custom:
+        del custom[key]
+        config["custom_questions"] = custom
+        save_config(config)
+        return True
+    return False

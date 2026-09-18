@@ -42,6 +42,48 @@ def test_message_for_and_severity_of_reflect_overrides():
     assert jev_client.message_for("curt") == jev_client.QUESTIONS["curt"]["message"]
 
 
+def test_custom_question_is_merged_into_defs():
+    config.add_custom_question(
+        "overpromising",
+        instructions="Does this overpromise?",
+        message="This might be overpromising.",
+        severity="warning",
+    )
+    defs = jev_client.get_question_defs()
+    assert set(defs) == {"curt", "missing_ask", "unprofessional", "impolite", "overpromising"}
+    assert defs["overpromising"]["message"] == "This might be overpromising."
+    assert jev_client.message_for("overpromising") == "This might be overpromising."
+    assert jev_client.severity_of("overpromising") == "warning"
+
+
+def test_custom_question_is_included_in_the_request_and_scored(monkeypatch):
+    config.add_custom_question(
+        "overpromising",
+        instructions="Does this overpromise?",
+        message="This might be overpromising.",
+        severity="warning",
+    )
+    captured = {}
+
+    class FakeResponse:
+        status_code = 200
+
+        def json(self):
+            return {"answers": {k: {"noul": 0.9} for k in captured["questions"]}}
+
+    def fake_post(url, headers, json, timeout):
+        captured["questions"] = set(json["questions"])
+        return FakeResponse()
+
+    monkeypatch.setattr(jev_client._CLIENT, "post", fake_post)
+    result = jev_client.check_draft(
+        "fake-key", "some text",
+        disabled_keys={"curt", "missing_ask", "unprofessional", "impolite"},
+    )
+    assert captured["questions"] == {"overpromising"}
+    assert result == {"overpromising": True}
+
+
 def test_no_api_key_returns_none():
     assert jev_client.check_draft(None, "some text") is None
     assert jev_client.check_draft("", "some text") is None
