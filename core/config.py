@@ -159,6 +159,12 @@ def add_app(label, process_name, domains=None):
             if normalized and normalized not in normalized_domains:
                 normalized_domains.append(normalized)
         entry["domains"] = normalized_domains
+    # Re-adding an already-watched app (e.g. re-running "Add app..." for
+    # it) must not silently wipe per-app question tuning set via "Edit
+    # selected" — only domains used to be preserved here, which lost this
+    # the same way until caught in a review.
+    if previous and previous.get("disabled_questions"):
+        entry["disabled_questions"] = list(previous["disabled_questions"])
     apps.append(entry)
     config["apps"] = apps
     save_config(config)

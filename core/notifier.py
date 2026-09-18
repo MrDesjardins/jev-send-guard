@@ -111,7 +111,12 @@ def _build_concerns(items):
         ).pack(fill="x")
 
         for message, severity in items:
-            style = _SEVERITY_STYLE[severity]
+            # Defense in depth: jev_client.get_question_defs() already
+            # clamps severity to a known value, but this lookup must never
+            # KeyError on unexpected data reaching it some other way — that
+            # would raise inside a tkinter callback Tk swallows silently,
+            # meaning the concern gets counted but the popup never appears.
+            style = _SEVERITY_STYLE.get(severity, _SEVERITY_STYLE["warning"])
             tk.Label(
                 frame,
                 text=f"{style['icon']} {message}",

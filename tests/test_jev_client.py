@@ -56,6 +56,20 @@ def test_custom_question_is_merged_into_defs():
     assert jev_client.severity_of("overpromising") == "warning"
 
 
+def test_invalid_severity_is_clamped_to_warning():
+    # Regression: an unrecognized severity string (e.g. from a hand-edited
+    # config.toml) used to reach core/notifier.py's dict-keyed lookup
+    # unfiltered, raising inside a tkinter callback Tk swallows silently —
+    # the concern would be counted but the popup would just never appear.
+    config.set_question_override("curt", severity="critical")
+    assert jev_client.severity_of("curt") == "warning"
+
+    config.add_custom_question(
+        "overpromising", instructions="...", message="...", severity="also-not-real",
+    )
+    assert jev_client.severity_of("overpromising") == "warning"
+
+
 def test_custom_question_is_included_in_the_request_and_scored(monkeypatch):
     config.add_custom_question(
         "overpromising",
