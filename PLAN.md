@@ -340,6 +340,39 @@ an actual Windows or macOS session** — trigger two evaluations in a row
 (one flagged, one clean, or vice versa) and confirm only the latest popup
 is ever on screen.
 
+### Windows browser-host bug (2026-09-18): browser-scoped apps never matched
+
+A later change (outside this conversation's history — see the "Update for
+MacOS" commit) added website-scoping for browsers: a browser process
+(Chrome/Edge/Firefox/Chromium) can only be watched for one explicit host
+(e.g. `docs.google.com`), read via `backend.get_active_browser_host
+(process_name)`, checked every poll in `core/watch_loop.py`. macOS
+implements this via AppleScript (`get_active_browser_host` in
+`platform_backends/macos.py`, asking the named browser app for its active
+tab's URL). **Windows never got the equivalent function at all** — the
+attribute didn't exist on the module, so `getattr(backend,
+"get_active_browser_host", None)` silently returned `None` every time,
+which meant `active_host` was always `None` and no browser-scoped rule
+could ever match. Reported symptom: a Google Docs rule (Firefox +
+`docs.google.com`) configured via Settings, but the log showed
+`host=None watched=False` on every Firefox focus event, forever.
+
+Fixed by adding `get_active_browser_host` to `platform_backends/windows.py`.
+There's no AppleScript-equivalent tab-URL API on Windows, so it reads the
+address bar's actual on-screen text via the same UI Automation mechanism
+already used for every other text field: breadth-first search the
+foreground window (bounded to 400 nodes / depth 6, so a large page's
+accessibility tree can't stall the 300ms poll loop) for an Edit/ComboBox
+control whose text parses as a URL, then keep only the hostname. The found
+control is cached per foreground window handle so repeated polls just
+re-read its text instead of re-walking the tree every 300ms. Verified the
+hostname-parsing logic in isolation (rejects search-query text containing
+spaces, handles bare-host and full-URL forms, case-insensitive) — the
+UI Automation tree search itself still needs a real Windows run to confirm
+it actually locates the address bar reliably across Chrome/Edge/Firefox,
+the same "built from the documented API shape, not yet run live" caveat
+as the rest of this project's Windows-specific accessibility code.
+
 ## Rough milestones
 
 1. **Spike accessibility read on both OSes** — a throwaway script per
