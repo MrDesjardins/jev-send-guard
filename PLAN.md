@@ -421,6 +421,38 @@ A batch of improvements picked from a review of the whole system:
   jevsendguard` after installing, and confirm the tray icon actually
   appears after a real logout/login, not just "no error was printed."
 
+### Milestone 5 (custom questions, shared window icon) — 2026-09-18
+
+Two follow-ups from actually using Milestone 4's Settings additions:
+
+- **Every Tk window showed Tk's default icon (a feather on Windows)
+  instead of matching the tray icon.** `core/icon.py` is now the single
+  source of truth for the app's icon (a generated circle, no external
+  asset file): `tray_app.py`'s `ICON_RUNNING`/`ICON_PAUSED` are built from
+  it, and `core/settings_window.py` calls `icon.set_window_icon()` on the
+  main Settings window and both of its dialogs. A `PhotoImage` reference
+  is kept on the widget itself (`_icon_photo_ref`) since Tk doesn't retain
+  one internally — a garbage-collected `PhotoImage` silently blanks the
+  icon back out, a easy-to-miss gotcha with this API.
+- **"Configure checks" could only edit the four built-in questions — no
+  way to add a new one or remove one entirely.** Added `core/config.py`'s
+  `custom_questions` table (separate from `questions`, the built-in
+  overrides table, since a custom question has no code-level default to
+  fall back to) with `add_custom_question`/`update_custom_question`/
+  `remove_custom_question`/`list_custom_questions`.
+  `jev_client.get_question_defs()` merges these in alongside the four
+  built-ins, so `check_draft()`, per-app disabling, and the popup styling
+  all handle a custom question identically to a built-in one with zero
+  additional code — verified end-to-end against the live API (a custom
+  "overpromising" question was correctly scored `True` for "I guarantee
+  this will be 100% bug-free... no matter what"). Settings' "Configure
+  checks" dialog gained "Add new check..." (validates the internal name:
+  lowercase/digits/underscores only) and "Delete" (built-ins reject
+  deletion with a message pointing at disabling instead).
+
+Test suite grew from 49 to 54 to cover the custom-question CRUD and its
+merge/scoring behavior; still all pure-logic, no OS session needed.
+
 ## Rough milestones
 
 1. **Spike accessibility read on both OSes** — a throwaway script per

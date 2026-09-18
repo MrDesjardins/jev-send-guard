@@ -18,10 +18,9 @@ import sys
 import threading
 from pathlib import Path
 
-from PIL import Image, ImageDraw
-
 from core import api_key as api_key_store
 from core import config
+from core import icon as icon_gen
 from core.logging_setup import setup_logging
 from core.watch_loop import run as run_watch_loop
 
@@ -35,20 +34,12 @@ _settings_process = None
 _snooze_timer = None
 _snooze_lock = threading.Lock()
 
-
-def _make_icon_image(rgba):
-    """A generated icon (filled circle) so there's no external asset file
-    to ship. Color distinguishes running vs paused at a glance."""
-    size = 64
-    image = Image.new("RGBA", (size, size), (0, 0, 0, 0))
-    draw = ImageDraw.Draw(image)
-    margin = 6
-    draw.ellipse((margin, margin, size - margin, size - margin), fill=rgba)
-    return image
-
-
-ICON_RUNNING = _make_icon_image((66, 133, 244, 255))  # blue
-ICON_PAUSED = _make_icon_image((154, 160, 166, 255))  # gray
+# Generated once here, and this exact image is what core/icon.py's
+# set_window_icon() re-derives for Settings — one shared source so the
+# tray icon and every Tk window's title-bar icon are guaranteed to match
+# instead of Settings showing Tk's default feather icon.
+ICON_RUNNING = icon_gen.make_image(icon_gen.COLOR_RUNNING)
+ICON_PAUSED = icon_gen.make_image(icon_gen.COLOR_PAUSED)
 
 
 def start_watch_thread():

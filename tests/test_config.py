@@ -90,3 +90,34 @@ def test_per_app_disabled_questions():
 
 def test_get_app_returns_none_for_unknown_process():
     assert config.get_app("Nope.exe") is None
+
+
+def test_add_update_remove_custom_question():
+    config.add_custom_question(
+        "overpromising",
+        instructions="Does this overpromise?",
+        message="This might be overpromising.",
+        severity="warning",
+    )
+    custom = config.list_custom_questions()
+    assert custom["overpromising"]["message"] == "This might be overpromising."
+    assert custom["overpromising"]["enabled"] is True
+    assert custom["overpromising"]["criteria"] == {
+        "true": "This is a concern.",
+        "false": "This is not a concern.",
+    }
+
+    config.update_custom_question("overpromising", severity="error")
+    assert config.list_custom_questions()["overpromising"]["severity"] == "error"
+
+    assert config.remove_custom_question("overpromising") is True
+    assert "overpromising" not in config.list_custom_questions()
+
+
+def test_remove_nonexistent_custom_question_returns_false():
+    assert config.remove_custom_question("nope") is False
+
+
+def test_update_nonexistent_custom_question_is_a_no_op():
+    config.update_custom_question("nope", severity="error")
+    assert "nope" not in config.list_custom_questions()

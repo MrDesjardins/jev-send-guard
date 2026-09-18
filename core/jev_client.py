@@ -118,14 +118,20 @@ QUESTIONS = {
 
 
 def get_question_defs():
-    """QUESTIONS merged with any user overrides from config.toml. Never
-    mutates QUESTIONS — an override only shadows fields for this lookup."""
+    """QUESTIONS merged with any user overrides from config.toml, plus any
+    fully custom user-added questions. Never mutates QUESTIONS — an
+    override only shadows fields for this lookup, and a custom question
+    exists only in config.toml with no code-level default at all."""
     overrides = config.get_question_overrides()
     merged = {}
     for key, base in QUESTIONS.items():
         entry = dict(base)
         entry["enabled"] = True
         entry.update({k: v for k, v in overrides.get(key, {}).items() if v is not None})
+        merged[key] = entry
+    for key, custom_q in config.list_custom_questions().items():
+        entry = dict(custom_q)
+        entry.setdefault("enabled", True)
         merged[key] = entry
     return merged
 

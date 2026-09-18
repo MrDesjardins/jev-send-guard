@@ -2,11 +2,13 @@
 
 A small background agent that watches whatever text field currently has OS
 focus — but only in an explicit allowlist of apps you configure — and,
-after you stop typing for about a second, runs four fast `noul` questions
+after you stop typing for about a second, runs fast `noul` questions
 against [TypeSafe AI's Jev model](https://docs.typesafe.ai) on the current
-draft: curt/blunt, missing a clear ask, unprofessional, impolite. A small
-popup appears anchored right next to the field: red for an error-severity
-concern (curt, missing ask, impolite), yellow for a warning (unprofessional),
+draft. Four questions ship built in (curt/blunt, missing a clear ask,
+unprofessional, impolite) and are fully editable — or you can add your own
+— from the tray's Settings window. A small popup appears anchored right
+next to the field: red for an error-severity concern (curt, missing ask,
+impolite by default), yellow for a warning (unprofessional by default),
 green with a checkmark if it's clean. It never blocks anything — there's no
 send gesture to hook into by design. See `PLAN.md` for the full design
 rationale, including the v1 Chrome-extension approach this replaced and why.
@@ -71,13 +73,25 @@ uv run install/install.py uninstall    # removes it
 
 Settings' **Configure checks...** lets you edit, per question: whether
 it's enabled at all, its severity (error/red vs. warning/yellow), the
-popup message, and the exact instructions sent to Jev. "Reset to default"
-always available — edits are stored as overrides in `config.toml`, never
-by changing the built-in defaults in code.
+popup message, and the exact instructions sent to Jev.
 
-**Edit selected** (on a watched app) lets you turn off specific checks for
-just that app — e.g. disable "unprofessional" for a casual Discord server
-without affecting anything else.
+- The four built-in checks (curt, missing ask, unprofessional, impolite)
+  can be edited or disabled, but not deleted — "Reset to default" drops
+  your edits and goes back to the built-in wording.
+- **Add new check...** creates a fully custom question (give it a short
+  internal name, then fill in its instructions/message/severity) — these
+  can be deleted outright with **Delete**, since there's no built-in
+  default to fall back to.
+
+Everything here is saved in `~/.jev-send-guard/config.toml`: edits to the
+four built-ins go under a `[questions.<name>]` table, custom questions
+under `[custom_questions.<name>]`. Editing code is never required —
+`core/jev_client.py`'s built-in defaults are read-only and merged with
+whatever's in that file at request time.
+
+**Edit selected** (on a watched app) lets you turn off specific checks —
+built-in or custom — for just that app, e.g. disable "unprofessional" for
+a casual Discord server without affecting anything else.
 
 ### Browsers are website-scoped
 
