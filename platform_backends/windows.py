@@ -10,6 +10,8 @@ manual poking, but manage.py and the real agent should import from here.
 import os
 import sys
 import time
+from collections import deque
+from urllib.parse import urlsplit
 
 if sys.platform != "win32":
     raise SystemExit("platform_backends/windows.py only runs on Windows.")
@@ -29,6 +31,15 @@ ZERO_WIDTH_CHARS = "﻿​‌‍"
 
 POLL_INTERVAL_SEC = 0.3
 ADD_FLOW_TIMEOUT_SEC = 15
+
+# Windows has no AppleScript-equivalent "ask the browser for its active tab
+# URL" API. The address bar's on-screen text is read instead via the same UI
+# Automation mechanism already used for every other text field — only the
+# hostname is ever kept, the rest of the URL is discarded immediately.
+_BROWSER_PROCESS_KEYS = {"chrome", "msedge", "firefox", "chromium"}
+_ADDRESS_BAR_SEARCH_MAX_NODES = 400
+_ADDRESS_BAR_SEARCH_MAX_DEPTH = 6
+_address_bar_cache = {"hwnd": None, "control": None}
 
 
 def _is_effectively_empty(text):
@@ -189,6 +200,104 @@ def get_focused_control():
         return auto.GetFocusedControl()
     except Exception:
         return None
+
+
+def _extract_hostname(candidate_text):
+    """Parses address-bar text as a URL, rejecting anything that looks like
+    a search query (contains whitespace) rather than an actual address."""
+    if not candidate_text:
+        return None
+    text = candidate_text.strip()
+    if not text or " " in text:
+        return None
+    try:
+        parsed = urlsplit(text if "://" in text else f"https://{text}")
+    except ValueError:
+        return None
+    if parsed.scheme not in ("http", "https"):
+        return None
+    hostname = parsed.hostname
+    if not hostname or "." not in hostname:
+        return None
+    return hostname.lower()
+
+
+def _find_address_bar_control(window):
+    """Breadth-first search of the browser window for an Edit/ComboBox
+    control whose text parses as a URL — this is the address bar. Bounded
+    by node count and depth so a large page's accessibility tree can't
+    stall the 300ms poll loop; BFS means the toolbar (shallow) is checked
+    well before diving into page content (typically much deeper)."""
+    queue = deque([(window, 0)])
+    visited = 0
+    while queue and visited < _ADDRESS_BAR_SEARCH_MAX_NODES:
+        node, depth = queue.popleft()
+        visited += 1
+        try:
+            control_type = node.ControlTypeName
+        except Exception:
+            control_type = None
+        if control_type in ("EditControl", "ComboBoxControl"):
+            if _extract_hostname(get_control_text(node)):
+                return node
+        if depth >= _ADDRESS_BAR_SEARCH_MAX_DEPTH:
+            continue
+        try:
+            children = node.GetChildren()
+        except Exception:
+            children = []
+        for child in children:
+            queue.append((child, depth + 1))
+    return None
+
+
+def get_active_browser_host(process_name):
+    """Return the active tab's hostname for a supported browser, or None.
+
+    Reads the address bar's on-screen text directly (there's no tab-URL API
+    on Windows the way AppleScript provides on macOS) and parses it as a
+    URL. The found control is cached per foreground window so repeated
+    polls just re-read its text rather than re-walking the whole window
+    tree each time. Fail-closed None on anything unexpected: no foreground
+    window, no matching control, or the field showing a search query
+    instead of a URL.
+    """
+    if not process_name:
+        return None
+    key = process_name.lower().removesuffix(".exe")
+    if key not in _BROWSER_PROCESS_KEYS:
+        return None
+
+    try:
+        hwnd = auto.GetForegroundWindow()
+    except Exception:
+        return None
+    if not hwnd:
+        return None
+
+    control = None
+    if _address_bar_cache["hwnd"] == hwnd and _address_bar_cache["control"] is not None:
+        try:
+            _ = _address_bar_cache["control"].ControlTypeName  # liveness check
+            control = _address_bar_cache["control"]
+        except Exception:
+            control = None
+
+    if control is None:
+        try:
+            window = auto.ControlFromHandle(hwnd)
+        except Exception:
+            window = None
+        if window is None:
+            return None
+        control = _find_address_bar_control(window)
+        _address_bar_cache["hwnd"] = hwnd
+        _address_bar_cache["control"] = control
+
+    if control is None:
+        return None
+
+    return _extract_hostname(get_control_text(control))
 
 
 def run_add_flow(prompt=input, output=print):
