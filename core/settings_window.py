@@ -56,7 +56,16 @@ def _open_edit_app_dialog(parent, app, on_saved):
     for key, q in jev_client.get_question_defs().items():
         var = tk.BooleanVar(value=key not in disabled)
         vars_by_key[key] = var
-        tk.Checkbutton(dialog, text=q["message"], variable=var).pack(anchor="w", padx=20)
+        globally_off = not q.get("enabled", True)
+        label = q["message"] + ("  (off globally — see Configure checks)" if globally_off else "")
+        checkbox = tk.Checkbutton(dialog, text=label, variable=var)
+        if globally_off:
+            # Still shown (and its checked state still saved) so re-enabling
+            # it globally later doesn't silently un-skip it here too — but
+            # greyed out and non-interactive so it's clear that unchecking
+            # it right now would be a no-op: it isn't running either way.
+            checkbox.config(state="disabled", disabledforeground="#9aa0a6")
+        checkbox.pack(anchor="w", padx=20)
 
     def do_save():
         new_disabled = [key for key, var in vars_by_key.items() if not var.get()]
