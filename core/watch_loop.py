@@ -145,15 +145,12 @@ def handle_draft(text, key, anchor_rect=None):
         log.info("Jev call failed, failing open silently (no false-positive checkmark)")
         return
 
-    if not result["curt"] and not result["missing_ask"]:
+    flagged = [key for key, concern in result.items() if concern]
+    if not flagged:
         log.info("no concerns, showing checkmark")
         notifier.notify_ok(anchor_rect)
         return
 
-    messages = []
-    if result["curt"]:
-        messages.append("This might read as curt or blunt.")
-    if result["missing_ask"]:
-        messages.append("Doesn't seem to have a clear ask.")
-    log.info("notifying: %s (anchor_rect=%s)", messages, anchor_rect)
-    notifier.notify(messages, anchor_rect)
+    items = [(jev_client.message_for(key), jev_client.severity_of(key)) for key in flagged]
+    log.info("notifying: %s (anchor_rect=%s)", items, anchor_rect)
+    notifier.notify(items, anchor_rect)

@@ -277,6 +277,34 @@ to suspect. A `_settings_lock` prevents two Settings windows (and two
 competing Tk mainloops) from opening at once, but doesn't address the
 main-thread question if that turns out to matter on macOS.
 
+### Milestone 3 (four questions + severity) — 2026-09-17
+
+v1's scope decision #4 ("two `noul` questions max, not a kitchen sink" —
+see the v1 write-up below) was expanded to four:
+`unprofessional` (warning/yellow) and `impolite` (error/red) joined the
+original `curt`/`missing_ask` (both error/red). All four are framed the
+same way (true = concern flagged) and live in one place —
+`core/jev_client.py`'s `QUESTIONS` dict — with each question's severity
+and popup message alongside it, so `check_draft()`/`watch_loop.py` score
+and display them generically instead of hardcoding four near-identical
+if-blocks. Verified against the live API: an insult flags
+`curt`/`unprofessional`/`impolite` together; a casual-but-harmless
+message ("yo bro...") flags only `unprofessional`; a polite explicit
+request comes back fully clean.
+
+`core/notifier.py`'s popup now takes a list of `(message, severity)`
+tuples rather than plain strings: each bullet is colored/iconed by its
+own severity (⚠ yellow for warning, ⛔ red for error), and the title uses
+the *worst* severity present — so an unprofessional-only result shows
+yellow throughout, but adding any error-severity concern turns the title
+red while the unprofessional bullet stays yellow. Precision is worth
+watching now more than with two questions: four independent 0.7-threshold
+judgments on the same short draft means more chances for an occasional
+wrong flag, particularly `unprofessional` given how casual most personal
+chat is by default (Discord especially) — if it over-fires, narrowing
+its instructions or raising just its own threshold is the fix, not
+lowering `NOUL_THRESHOLD` globally.
+
 ## Rough milestones
 
 1. **Spike accessibility read on both OSes** — a throwaway script per

@@ -87,15 +87,30 @@ def _show_popup(build_content, anchor_rect, auto_dismiss_ms):
 
 
 CONCERN_RED = "#f28b82"
+CONCERN_YELLOW = "#fdd663"
 OK_GREEN = "#81c995"
 
+_SEVERITY_STYLE = {
+    "error": {"icon": "⛔", "color": CONCERN_RED},
+    "warning": {"icon": "⚠", "color": CONCERN_YELLOW},
+}
 
-def _build_concerns(messages):
+
+def _build_concerns(items):
+    """items: list of (message: str, severity: "error" | "warning"). The
+    popup's title reflects the worst severity present; each bullet is
+    styled with its own — e.g. an unprofessional-only result shows a
+    yellow warning throughout, but adding one impolite result turns the
+    title red even though the unprofessional bullet stays yellow."""
+
     def build(frame, dismiss):
+        overall = "error" if any(sev == "error" for _msg, sev in items) else "warning"
+        overall_style = _SEVERITY_STYLE[overall]
+
         tk.Label(
             frame,
-            text="⛔ Before you send — Jev noticed:",
-            fg=CONCERN_RED,
+            text=f"{overall_style['icon']} Before you send — Jev noticed:",
+            fg=overall_style["color"],
             bg=BG,
             font=("Segoe UI", 9, "bold"),
             anchor="w",
@@ -103,11 +118,12 @@ def _build_concerns(messages):
             wraplength=WIDTH - 28,
         ).pack(fill="x")
 
-        for message in messages:
+        for message, severity in items:
+            style = _SEVERITY_STYLE[severity]
             tk.Label(
                 frame,
-                text=f"• {message}",
-                fg="white",
+                text=f"{style['icon']} {message}",
+                fg=style["color"],
                 bg=BG,
                 font=("Segoe UI", 9),
                 anchor="w",
@@ -143,13 +159,15 @@ def _build_ok():
     return build
 
 
-def notify(messages, anchor_rect=None):
+def notify(items, anchor_rect=None):
     """Fire-and-forget: shows the concerns popup in a background thread so
-    the watch loop keeps polling while it's up. `anchor_rect` is the
-    focused control's (left, top, right, bottom) in screen coordinates."""
+    the watch loop keeps polling while it's up. `items` is a list of
+    (message, severity) tuples, severity being "error" or "warning".
+    `anchor_rect` is the focused control's (left, top, right, bottom) in
+    screen coordinates."""
     thread = threading.Thread(
         target=_show_popup,
-        args=(_build_concerns(messages), anchor_rect, 8000),
+        args=(_build_concerns(items), anchor_rect, 8000),
         daemon=True,
     )
     thread.start()
