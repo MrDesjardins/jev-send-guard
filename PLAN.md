@@ -550,6 +550,33 @@ Windows session either — both need that pass before considering this
 done.
 
 
+### Milestone 9 (icon + startup-latency diagnostics) — 2026-09-18
+
+Two things reported after the popup redesign:
+
+- **The tray/window icon was still a plain flat circle.** `core/icon.py`
+  was never actually redesigned since it was first added — a deliberate
+  "no external asset file" placeholder that just never got revisited.
+  Replaced with a rounded badge + white checkmark glyph, rendered and
+  visually checked at both full size and actual tray-icon size (32px) —
+  still reads clearly that small, which a bare dot didn't really either.
+- **Tray app startup and opening Settings reportedly take ~5s.** This is
+  the same category of complaint as Milestone 1's original Windows
+  startup investigation (traced then to `keyring`'s default backend
+  auto-discovery), but that thread ended before real numbers came back
+  confirming the fix actually held under real use — `keyring`'s Windows
+  Credential Manager backend, even with discovery skipped via explicit
+  `set_keyring()`, could still just be inherently slow on a given
+  machine (e.g. one on a domain, where Credential Manager access can
+  involve policy/AD round-trips). Rather than guess a third fix blindly,
+  added per-import timing to `tray_app.py`'s startup and a timed
+  `get_api_key()` call plus overall build time to
+  `settings_window.py`'s `open_settings_window()` — both logged at DEBUG
+  (`~/.jev-send-guard/agent.log` always; console too with `JEV_DEBUG=1`).
+  **Needs the actual numbers from a real run to know where the 5s
+  actually goes** before attempting another fix.
+
+
 ## Rough milestones
 
 1. **Spike accessibility read on both OSes** — a throwaway script per

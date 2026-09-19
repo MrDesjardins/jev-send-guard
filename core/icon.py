@@ -1,7 +1,11 @@
-"""Shared icon generation: the same simple circle glyph is used for the
-tray icon and every Tk window's title bar, so Settings doesn't show Tk's
-generic default icon (a feather, on Windows) while the tray shows
-something else entirely.
+"""Shared icon generation: the same glyph is used for the tray icon and
+every Tk window's title bar, so Settings doesn't show Tk's generic default
+icon (a feather, on Windows) while the tray shows something else entirely.
+
+A rounded badge + checkmark rather than a plain filled circle — at actual
+tray-icon sizes (effectively 16-32px once the OS downscales this), a
+recognizable glyph reads better than an attempt at finer detail, and a
+bare dot doesn't read as an app icon at all.
 """
 
 from PIL import Image, ImageDraw
@@ -9,13 +13,22 @@ from PIL import Image, ImageDraw
 SIZE = 64
 COLOR_RUNNING = (66, 133, 244, 255)  # blue
 COLOR_PAUSED = (154, 160, 166, 255)  # gray
+_WHITE = (255, 255, 255, 255)
 
 
 def make_image(rgba=COLOR_RUNNING):
     image = Image.new("RGBA", (SIZE, SIZE), (0, 0, 0, 0))
     draw = ImageDraw.Draw(image)
-    margin = 6
-    draw.ellipse((margin, margin, SIZE - margin, SIZE - margin), fill=rgba)
+    margin = 4
+    draw.rounded_rectangle(
+        (margin, margin, SIZE - margin, SIZE - margin), radius=16, fill=rgba
+    )
+    draw.line(
+        [(18, 32), (27, 42), (46, 20)],
+        fill=_WHITE,
+        width=6,
+        joint="curve",
+    )
     return image
 
 
