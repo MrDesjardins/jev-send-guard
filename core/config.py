@@ -41,6 +41,7 @@ code-level default to fall back to. Both are merged by
 core/jev_client.py's get_question_defs().
 """
 
+import logging
 import sys
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -51,6 +52,8 @@ else:  # pragma: no cover - project requires >=3.11
     import tomli as tomllib
 
 import tomli_w
+
+log = logging.getLogger("jev-send-guard")
 
 CONFIG_DIR = Path.home() / ".jev-send-guard"
 CONFIG_PATH = CONFIG_DIR / "config.toml"
@@ -68,8 +71,19 @@ _BROWSER_PROCESS_NAMES = {
 def load_config():
     if not CONFIG_PATH.exists():
         return {"apps": []}
-    with open(CONFIG_PATH, "rb") as f:
-        config = tomllib.load(f)
+    try:
+        with open(CONFIG_PATH, "rb") as f:
+            config = tomllib.load(f)
+    except (tomllib.TOMLDecodeError, OSError):
+        # Fail closed to an empty config rather than raising: this is
+        # called on every ~300ms poll of the watch loop, so an unhandled
+        # exception here (from a bad manual edit, a crash mid-write, or a
+        # race between two processes saving around the same time) would
+        # propagate straight up and, in tray_app.py, silently kill the
+        # background watch thread — the tray icon keeps showing "running"
+        # while nothing is ever checked again, with no visible symptom.
+        log.exception("config.toml is corrupted or unreadable — treating as empty")
+        return {"apps": []}
     config.setdefault("apps", [])
     return config
 

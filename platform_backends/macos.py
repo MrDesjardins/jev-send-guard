@@ -84,7 +84,6 @@ MAX_EDITOR_HEIGHT = 400
 MIN_EDITOR_HEIGHT = 12
 # PyObjC does not export this constant in every ApplicationServices build.
 kAXEditableAttribute = "AXEditable"
-_EDITABLE_TEXT_ROLES = {"AXTextArea", "AXTextField", "AXComboBox"}
 
 # AppleScript is the only supported no-extension way on macOS to obtain an
 # active browser tab URL. The lookup is restricted to well-known browser app
@@ -219,10 +218,22 @@ def is_password_field(control):
 
 
 def is_writable_text_control(control):
-    """Reject read-only and window-sized AX text areas (e.g. Slack threads)."""
+    """Reject read-only and window-sized AX text areas (e.g. Slack threads).
+
+    Deliberately does not gate on a role whitelist (e.g. requiring
+    AXTextArea/AXTextField/AXComboBox) the way an earlier version of this
+    did — run_add_flow's own comment documents that Discord/Slack's
+    Electron accessibility tree can expose the compose box as AXGroup or
+    AXWebArea instead, so a role whitelist would silently reject exactly
+    the editors this project cares most about, on the very platform this
+    hasn't been validated live on yet. Mirrors windows.py's approach
+    instead — which has been validated against Discord — read-only and
+    plausible-size only, not control type. get_focused_control() only
+    ever returns whatever currently holds keyboard focus, and
+    non-interactive static content normally can't receive that, so this
+    is not as loose as it looks.
+    """
     if control is None:
-        return False
-    if _get_attr(control, kAXRoleAttribute) not in _EDITABLE_TEXT_ROLES:
         return False
     editable = _get_attr(control, kAXEditableAttribute)
     if editable is False:

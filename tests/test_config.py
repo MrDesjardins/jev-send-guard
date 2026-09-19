@@ -16,6 +16,20 @@ def test_default_config_is_empty():
     assert config.list_apps() == []
 
 
+def test_corrupted_config_fails_closed_instead_of_raising():
+    # Regression: load_config() used to have no exception handling at all
+    # around parsing config.toml. Since watch_loop.py calls list_apps()
+    # on every ~300ms poll, an unhandled exception here (bad manual edit,
+    # crash mid-write, a race between two processes saving at once) would
+    # propagate straight up and, in tray_app.py, silently kill the
+    # background watch thread with no visible symptom.
+    config.CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
+    config.CONFIG_PATH.write_text("this is not [valid toml", encoding="utf-8")
+
+    assert config.list_apps() == []
+    assert config.load_config() == {"apps": []}
+
+
 def test_add_and_list_app():
     config.add_app(label="Discord messages", process_name="Discord.exe")
     apps = config.list_apps()

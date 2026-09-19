@@ -453,6 +453,37 @@ Two follow-ups from actually using Milestone 4's Settings additions:
 Test suite grew from 49 to 54 to cover the custom-question CRUD and its
 merge/scoring behavior; still all pure-logic, no OS session needed.
 
+### Milestone 6 (three bugs from a code review) — 2026-09-18
+
+- **macOS's `is_writable_text_control` would have silently broken Discord/
+  Slack.** It required the focused control's AX role to be exactly
+  `AXTextArea`/`AXTextField`/`AXComboBox` — but this same file's
+  `run_add_flow` already documented that Electron apps can expose their
+  compose box as `AXGroup`/`AXWebArea` instead. That role whitelist would
+  have rejected exactly those controls before ever reading their text,
+  meaning Discord/Slack messages — the whole reason v2 exists — would
+  never be evaluated on macOS at all. Removed the whitelist; now mirrors
+  `windows.py`'s already-validated approach (read-only + plausible size
+  only, not control type). `get_focused_control()` only ever returns
+  whatever currently holds keyboard focus, and non-interactive static
+  content normally can't, so this isn't as loose as dropping a whitelist
+  might sound.
+- **A corrupted `config.toml` would silently and permanently kill
+  monitoring.** `load_config()` had no exception handling around parsing
+  it. Since `watch_loop.py` calls `list_apps()` on every ~300ms poll, a
+  bad manual edit, a crash mid-write, or a race between two processes
+  saving around the same time (`tray_app.py` + `settings_app.py`) would
+  raise on the very next poll and propagate straight up. In `tray_app.py`
+  this runs inside a daemon thread with no handling around it either:
+  Python prints a traceback to stderr and silently kills just that
+  thread, while the tray icon keeps showing "running" — nothing is ever
+  checked again for the rest of the session, no visible symptom. Fixed at
+  the source: `load_config()` now catches `TOMLDecodeError`/`OSError` and
+  fails closed to an empty config (logged), matching the project's
+  existing "default empty" philosophy. Also added a try/except around
+  `run_watch_loop()` itself in `tray_app.py` as a backstop against any
+  *other* unexpected exception, not just this one.
+
 ## Rough milestones
 
 1. **Spike accessibility read on both OSes** — a throwaway script per
