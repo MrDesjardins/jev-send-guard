@@ -16,10 +16,9 @@ itself, so "reset to default" is always just dropping the override.
 
 import logging
 import socket
+import threading
 import time
 from urllib.parse import urlparse
-
-import httpx
 
 from core import config
 
@@ -35,15 +34,42 @@ NOUL_THRESHOLD = 0.7
 
 _HOSTNAME = urlparse(API_URL).hostname
 
-# Two common Windows-specific causes of "every call takes 10-18s but never
-# actually times out": (1) WPAD/PAC proxy auto-detection blocking before the
-# real request even starts, and (2) "happy eyeballs" — DNS returns an IPv6
-# address that's unreachable on this network, so the OS burns several
-# seconds on that attempt before falling back to IPv4. trust_env=False skips
-# proxy auto-detection; local_address="0.0.0.0" forces IPv4 so there's
-# nothing to fall back from.
-_TRANSPORT = httpx.HTTPTransport(local_address="0.0.0.0")
-_CLIENT = httpx.Client(transport=_TRANSPORT, trust_env=False)
+_client_lock = threading.Lock()
+_client = None
+
+
+def _get_client():
+    """Importing httpx and constructing its Client/HTTPTransport is
+    deferred to the first actual check rather than paid at module-import
+    time. Measured at 13+ seconds on one real machine — since
+    core/watch_loop.py imports this module, every app startup and every
+    Settings-window open paid that cost even in a session where no Jev
+    call was ever made. Cached after the first call, same as the eager
+    version was, so this doesn't cost anything on repeat checks.
+    """
+    global _client
+    if _client is None:
+        with _client_lock:
+            if _client is None:
+                import httpx
+
+                start = time.perf_counter()
+                # Two common Windows-specific causes of "every call takes
+                # 10-18s but never actually times out": (1) WPAD/PAC proxy
+                # auto-detection blocking before the real request even
+                # starts, and (2) "happy eyeballs" — DNS returns an IPv6
+                # address that's unreachable on this network, so the OS
+                # burns several seconds on that attempt before falling
+                # back to IPv4. trust_env=False skips proxy
+                # auto-detection; local_address="0.0.0.0" forces IPv4 so
+                # there's nothing to fall back from.
+                transport = httpx.HTTPTransport(local_address="0.0.0.0")
+                _client = httpx.Client(transport=transport, trust_env=False)
+                log.debug(
+                    "jev_client: lazy httpx import+client init took %.2fs",
+                    time.perf_counter() - start,
+                )
+    return _client
 
 # Every question is framed the same way — true means "this is the concern"
 # — so scoring is generic (see check_draft) instead of one-off per question.
@@ -191,6 +217,8 @@ def check_draft(api_key, draft_text, disabled_keys=None):
     if not active_questions:
         return {}
 
+    import httpx  # cheap after the first real call — see _get_client()
+
     dns_start = time.monotonic()
     try:
         socket.getaddrinfo(_HOSTNAME, 443)
@@ -200,7 +228,7 @@ def check_draft(api_key, draft_text, disabled_keys=None):
 
     start = time.monotonic()
     try:
-        response = _CLIENT.post(
+        response = _get_client().post(
             API_URL,
             headers={
                 "Authorization": f"Bearer {api_key}",

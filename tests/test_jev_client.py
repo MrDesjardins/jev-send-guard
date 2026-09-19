@@ -89,7 +89,7 @@ def test_custom_question_is_included_in_the_request_and_scored(monkeypatch):
         captured["questions"] = set(json["questions"])
         return FakeResponse()
 
-    monkeypatch.setattr(jev_client._CLIENT, "post", fake_post)
+    monkeypatch.setattr(jev_client._get_client(), "post", fake_post)
     result = jev_client.check_draft(
         "fake-key", "some text",
         disabled_keys={"curt", "missing_ask", "unprofessional", "impolite"},
@@ -110,7 +110,7 @@ def test_all_questions_disabled_returns_empty_without_network_call(monkeypatch):
     def fail_if_called(*args, **kwargs):
         raise AssertionError("should not have called the network")
 
-    monkeypatch.setattr(jev_client._CLIENT, "post", fail_if_called)
+    monkeypatch.setattr(jev_client._get_client(), "post", fail_if_called)
     assert jev_client.check_draft("fake-key", "some text") == {}
 
 
@@ -133,7 +133,7 @@ def test_disabled_keys_param_excludes_that_question_from_the_request(monkeypatch
         captured["questions"] = set(json["questions"])
         return FakeResponse()
 
-    monkeypatch.setattr(jev_client._CLIENT, "post", fake_post)
+    monkeypatch.setattr(jev_client._get_client(), "post", fake_post)
     result = jev_client.check_draft("fake-key", "some text", disabled_keys={"unprofessional"})
 
     assert "unprofessional" not in captured["questions"]
@@ -145,7 +145,7 @@ def test_fails_open_on_http_error(monkeypatch):
     def fake_post(*args, **kwargs):
         raise httpx.ConnectError("boom")
 
-    monkeypatch.setattr(jev_client._CLIENT, "post", fake_post)
+    monkeypatch.setattr(jev_client._get_client(), "post", fake_post)
     assert jev_client.check_draft("fake-key", "some text") is None
 
 
@@ -156,7 +156,7 @@ def test_fails_open_on_non_200(monkeypatch):
         def json(self):
             return {}
 
-    monkeypatch.setattr(jev_client._CLIENT, "post", lambda *a, **k: FakeResponse())
+    monkeypatch.setattr(jev_client._get_client(), "post", lambda *a, **k: FakeResponse())
     assert jev_client.check_draft("fake-key", "some text") is None
 
 
@@ -167,7 +167,7 @@ def test_fails_open_on_missing_answers(monkeypatch):
         def json(self):
             return {}
 
-    monkeypatch.setattr(jev_client._CLIENT, "post", lambda *a, **k: FakeResponse())
+    monkeypatch.setattr(jev_client._get_client(), "post", lambda *a, **k: FakeResponse())
     assert jev_client.check_draft("fake-key", "some text") is None
 
 
@@ -178,7 +178,7 @@ def test_score_below_threshold_is_not_flagged(monkeypatch):
         def json(self):
             return {"answers": {"curt": {"noul": 0.69}}}
 
-    monkeypatch.setattr(jev_client._CLIENT, "post", lambda *a, **k: FakeResponse())
+    monkeypatch.setattr(jev_client._get_client(), "post", lambda *a, **k: FakeResponse())
     result = jev_client.check_draft(
         "fake-key", "some text",
         disabled_keys={"missing_ask", "unprofessional", "impolite"},
