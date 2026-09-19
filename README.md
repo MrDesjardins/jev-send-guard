@@ -13,6 +13,16 @@ green with a checkmark if it's clean. It never blocks anything — there's no
 send gesture to hook into by design. See `PLAN.md` for the full design
 rationale, including the v1 Chrome-extension approach this replaced and why.
 
+## Screenshots & demo
+
+| Watched-apps settings | Configure checks |
+| --- | --- |
+| ![Watched apps settings](docs/media/JevSendGuardSetting.png) | ![Configure checks settings](docs/media/JevSendGuardConfigurationSettings.png) |
+
+<video src="docs/media/JevSendDemo1.mp4" controls width="600"></video>
+
+(If the video above doesn't render, [watch/download it directly](docs/media/JevSendDemo1.mp4).)
+
 ## Status
 
 - **Windows**: built and validated end-to-end against real apps (Discord
