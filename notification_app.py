@@ -120,7 +120,22 @@ def show(payload):
     if payload["kind"] == "ok":
         content.addSubview_(_label("✓ Looks good", _color(0.51, 0.79, 0.60), 18, 22, bold=True))
     else:
-        content.addSubview_(_label("Before you send — Jev noticed:", _color(0.95, 0.55, 0.51), height - 34, 20, bold=True))
+        # Matches core/notifier.py's Windows popup: the title reflects the
+        # *worst* severity actually present, not a hardcoded red — an
+        # unprofessional-only (warning) result should show yellow
+        # throughout, not a red title implying an error-level concern.
+        overall_error = any(severity == "error" for _message, severity in items)
+        title_color = _color(0.95, 0.55, 0.51) if overall_error else _color(0.99, 0.84, 0.39)
+        title_icon = "⛔" if overall_error else "⚠"
+        content.addSubview_(
+            _label(
+                f"{title_icon} Before you send — Jev noticed:",
+                title_color,
+                height - 34,
+                20,
+                bold=True,
+            )
+        )
         for index, (message, severity) in enumerate(items):
             color = _color(0.95, 0.55, 0.51) if severity == "error" else _color(0.99, 0.84, 0.39)
             icon = "⛔" if severity == "error" else "⚠"

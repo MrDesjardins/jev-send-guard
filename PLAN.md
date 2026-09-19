@@ -483,6 +483,14 @@ merge/scoring behavior; still all pure-logic, no OS session needed.
   existing "default empty" philosophy. Also added a try/except around
   `run_watch_loop()` itself in `tray_app.py` as a backstop against any
   *other* unexpected exception, not just this one.
+- **`notification_app.py`'s (macOS native popup) title was hardcoded
+  red**, regardless of which severities were actually present — an
+  `unprofessional`-only (warning) result would still show a red title
+  implying an error-level concern, even though each bullet's own color
+  was already correct. `core/notifier.py`'s Windows popup already
+  computes the title from the worst severity actually present; the
+  macOS one now matches it (and gained the same title icon Windows has,
+  which it was missing entirely).
 
 ## Rough milestones
 
