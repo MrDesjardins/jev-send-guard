@@ -16,15 +16,41 @@ Tk and pystray's Cocoa event loop cannot safely share one interpreter.
 import subprocess
 import sys
 import threading
+import time
 from pathlib import Path
 
-from core import api_key as api_key_store
-from core import config
-from core import icon as icon_gen
-from core.logging_setup import setup_logging
-from core.watch_loop import run as run_watch_loop
+_PROCESS_START = time.perf_counter()
+
+from core.logging_setup import setup_logging  # noqa: E402
 
 log = setup_logging()
+
+# Imports are timed individually and logged at DEBUG (visible with
+# JEV_DEBUG=1) rather than as one aggregate: a slow "starting the app"
+# report needs to say *which* import is slow, not just that startup as a
+# whole took a while — this is the same instrumentation approach used
+# once before on agent.py for the same kind of report.
+_t = time.perf_counter()
+from core import api_key as api_key_store  # noqa: E402
+
+log.debug("tray_app: import core.api_key took %.2fs", time.perf_counter() - _t)
+
+_t = time.perf_counter()
+from core import config  # noqa: E402
+
+log.debug("tray_app: import core.config took %.2fs", time.perf_counter() - _t)
+
+_t = time.perf_counter()
+from core import icon as icon_gen  # noqa: E402
+
+log.debug("tray_app: import core.icon took %.2fs", time.perf_counter() - _t)
+
+_t = time.perf_counter()
+from core.watch_loop import run as run_watch_loop  # noqa: E402
+
+log.debug("tray_app: import core.watch_loop took %.2fs", time.perf_counter() - _t)
+
+log.debug("tray_app: all imports done at %.2fs since process start", time.perf_counter() - _PROCESS_START)
 
 stop_event = threading.Event()
 pause_event = threading.Event()
@@ -38,8 +64,10 @@ _snooze_lock = threading.Lock()
 # set_window_icon() re-derives for Settings — one shared source so the
 # tray icon and every Tk window's title-bar icon are guaranteed to match
 # instead of Settings showing Tk's default feather icon.
+_t = time.perf_counter()
 ICON_RUNNING = icon_gen.make_image(icon_gen.COLOR_RUNNING)
 ICON_PAUSED = icon_gen.make_image(icon_gen.COLOR_PAUSED)
+log.debug("tray_app: icon image generation took %.2fs", time.perf_counter() - _t)
 
 
 def start_watch_thread():
@@ -170,6 +198,9 @@ def main():
         # pystray icons start hidden. Passing a custom setup callback replaces
         # its default callback, which would otherwise set this for us.
         icon.visible = True
+        log.debug(
+            "tray_app: icon visible %.2fs since process start", time.perf_counter() - _PROCESS_START
+        )
         start_watch_thread()
 
     icon.run(setup=setup)
