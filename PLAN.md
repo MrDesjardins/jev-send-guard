@@ -577,6 +577,35 @@ Two things reported after the popup redesign:
   actually goes** before attempting another fix.
 
 
+### Milestone 10 (found the 5s startup cost) — 2026-09-18
+
+Real numbers from a live Windows run (see Milestone 9) pinned it down
+precisely: `import core.jev_client` alone took 13.63s, while every other
+import (`api_key`, `config`, `notifier`, `pre_filter`, `stats`,
+`idle_watcher`) was under 0.02s. The keyring theory from Milestone 1 was
+a red herring this whole time — `get_api_key()` measured at 0.00s on the
+same run.
+
+The actual cost was importing `httpx` and constructing its `Client`/
+`HTTPTransport` — both happened at `core/jev_client.py`'s module level,
+meaning every process that imports `core.watch_loop` (which is every
+`tray_app.py` startup and, since `open_settings_window()` also imports
+`jev_client` transitively, arguably every Settings open too, though
+Settings itself measured fast because `jev_client` was already imported
+by then) pays this cost immediately — even in a session where no Jev
+check is ever actually made. Deferred both the `import httpx` statement
+and the `Client`/`HTTPTransport` construction into a lazily-initialized,
+lock-guarded singleton (`_get_client()`) that only runs on the first real
+`check_draft()` call, with its own timing log. This doesn't make the
+underlying cost disappear (still unconfirmed whether it's `httpx`'s own
+import chain or the `HTTPTransport(local_address=...)` socket setup that's
+slow on this machine — plausibly antivirus/EDR scanning on a managed
+corporate Windows box, consistent with the git author's `@roblox.com`
+address) but moves it from "every app startup" to "only if you actually
+type something that gets evaluated," which is the only place it's
+unavoidable anyway.
+
+
 ## Rough milestones
 
 1. **Spike accessibility read on both OSes** — a throwaway script per
