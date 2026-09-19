@@ -71,6 +71,23 @@ def _get_client():
                 )
     return _client
 
+
+def warm_up_async():
+    """Kicks off the import+construction in a background thread instead
+    of waiting for the first real check to trigger it — deferring it
+    (see _get_client()) fixed startup being slow, but just moved the same
+    wait to the first thing you type that actually gets evaluated, which
+    is arguably worse (it now looks like the tool itself hung). Safe to
+    call more than once: _get_client()'s lock ensures the work only
+    happens once no matter how many callers race for it, and this
+    function never blocks the caller — the watch loop keeps polling while
+    it happens. If a real check arrives before warm-up finishes, it just
+    blocks on the same lock until that one-time init completes, same as
+    it would have without warming up at all.
+    """
+    threading.Thread(target=_get_client, daemon=True).start()
+
+
 # Every question is framed the same way — true means "this is the concern"
 # — so scoring is generic (see check_draft) instead of one-off per question.
 # Each key's severity (used by watch_loop.py / notifier.py) lives alongside

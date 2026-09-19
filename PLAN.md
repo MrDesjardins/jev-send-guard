@@ -606,6 +606,41 @@ type something that gets evaluated," which is the only place it's
 unavoidable anyway.
 
 
+### Milestone 11 (background warm-up) — 2026-09-18
+
+Deferring httpx to first use (Milestone 10) fixed startup speed but just
+moved the same ~13s wait to the first message that actually gets
+evaluated — arguably worse, since at that point it looks like the tool
+itself has hung rather than "the app is starting up."
+
+Added `jev_client.warm_up_async()`: fires the same one-time
+import+construct work in a background daemon thread instead of waiting
+for a real check to trigger it. Called once from `watch_loop.run()`
+(covering both `tray_app.py` and `agent.py`, the two things that call it)
+right after the watched-apps/API-key checks pass, so it starts racing in
+the background the moment the app is actually going to run — not before
+(no point warming up if there's nothing to watch or no key set). Safe to
+call redundantly: `_get_client()`'s lock+cache ensures the real work only
+ever happens once, and a real check that arrives before warm-up finishes
+just blocks on that same lock rather than double-doing the work.
+
+This doesn't eliminate the underlying ~13s cost, only moves it earlier
+so it's very likely finished by the time you actually pause on a
+message worth checking. The root cause itself is still unconfirmed —
+best working theory, given the measured cost is consistent and one-time
+per process and the git author's `@roblox.com` address suggests a
+managed corporate machine: antivirus/EDR software commonly hooks file
+reads and synchronously scans each new file the first time a process
+touches it, and `httpx`'s import chain touches several packages
+(`httpcore`, `certifi`, `h11`, `sniffio`/`anyio`, `idna`) for the first
+time in the process. Equally plausible: the `HTTPTransport(local_address=
+"0.0.0.0")` call causing an intercepted first raw socket creation.
+Neither has been confirmed — that would need testing directly on the
+affected machine (e.g. temporarily excluding this working directory from
+real-time AV scanning, purely to test the hypothesis) rather than
+anything fixable from this environment.
+
+
 ## Rough milestones
 
 1. **Spike accessibility read on both OSes** — a throwaway script per

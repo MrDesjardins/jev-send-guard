@@ -100,6 +100,12 @@ def run(stop_event, pause_event=None, backend=None):
         )
         return 1
 
+    # Fire-and-forget: gets the one-time httpx import/client cost (see
+    # jev_client._get_client()) out of the way in the background instead
+    # of paying it the moment you first type something that gets
+    # evaluated, which looked like the tool itself had hung.
+    jev_client.warm_up_async()
+
     log.info("Watching:")
     for app in watched_apps:
         log.info("  - %s (%s)", app["label"], app["process_name"])
