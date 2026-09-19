@@ -492,6 +492,34 @@ merge/scoring behavior; still all pure-logic, no OS session needed.
   macOS one now matches it (and gained the same title icon Windows has,
   which it was missing entirely).
 
+### Milestone 7 (Settings UX pass) — 2026-09-18
+
+A few concrete usability gaps in `core/settings_window.py`, found by reading
+the whole window fresh rather than per-feature:
+
+- **"Configure checks"'s selector showed raw internal storage keys**
+  (`missing_ask`, `unprofessional`) instead of each check's actual popup
+  message — a user shouldn't have to decode `snake_case` identifiers to
+  find the check they want. Rebuilt the selector as a `Menubutton`/`Menu`
+  pair (plain `OptionMenu` ties its button text directly to the stored
+  value, so it couldn't show a different display label) showing each
+  check's `message` text while the underlying `selected` variable still
+  holds the real key everywhere else. Same treatment for the severity
+  picker: "Error (red ⛔)" / "Warning (yellow ⚠)" instead of bare
+  `error`/`warning`.
+- **No first-run guidance.** A brand new install shows an empty watched-
+  apps list with zero orientation. Added a hint ("Nothing is watched yet
+  — click \"Add app...\" below to get started") that appears only when
+  the list is empty.
+- **Remove/Edit silently did nothing with no selection.** Clicking either
+  button with nothing selected in the list was a no-op with zero
+  feedback — indistinguishable from the button not working at all. Both
+  now flash "Select an app in the list first."
+- **Fixed-size, non-resizable main window** (380×680) risked clipping
+  the bottom section on a smaller display or larger system font scale,
+  and the window has grown to six stacked sections over several
+  features. Made it resizable with a sane minimum size instead.
+
 ## Rough milestones
 
 1. **Spike accessibility read on both OSes** — a throwaway script per

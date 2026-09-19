@@ -105,21 +105,34 @@ def _open_configure_checks_dialog(parent):
     def current_keys():
         return list(jev_client.get_question_defs().keys())
 
+    def label_for_key(key):
+        # The dropdown shows each check's actual popup message ("Doesn't
+        # seem to have a clear ask.") rather than its internal storage key
+        # ("missing_ask") — the key is an implementation detail, not
+        # something a user should have to decode.
+        defs = jev_client.get_question_defs()
+        return defs[key]["message"] if key in defs else key
+
     selected = tk.StringVar(value=current_keys()[0])
+
     selector_row = tk.Frame(dialog)
     selector_row.pack(fill="x", padx=12)
     tk.Label(selector_row, text="Check:").pack(side="left")
-    option_menu = tk.OptionMenu(selector_row, selected, *current_keys())
-    option_menu.pack(side="left")
+    menubutton = tk.Menubutton(selector_row, relief="raised", anchor="w")
+    menubutton.pack(side="left", fill="x", expand=True, padx=(4, 0))
+    dropdown = tk.Menu(menubutton, tearoff=False)
+    menubutton["menu"] = dropdown
 
     def refresh_menu():
         keys = current_keys()
-        menu = option_menu["menu"]
-        menu.delete(0, "end")
+        dropdown.delete(0, "end")
         for k in keys:
-            menu.add_command(label=k, command=lambda value=k: selected.set(value))
+            dropdown.add_command(label=label_for_key(k), command=lambda value=k: selected.set(value))
         if keys and selected.get() not in keys:
             selected.set(keys[0])
+        menubutton.config(text=label_for_key(selected.get()) if keys else "(none)")
+
+    selected.trace_add("write", lambda *_args: menubutton.config(text=label_for_key(selected.get())))
 
     enabled_var = tk.BooleanVar()
     severity_var = tk.StringVar()
@@ -131,7 +144,16 @@ def _open_configure_checks_dialog(parent):
     severity_row = tk.Frame(dialog)
     severity_row.pack(fill="x", padx=12, pady=(4, 0))
     tk.Label(severity_row, text="Severity:").pack(side="left")
-    tk.OptionMenu(severity_row, severity_var, "error", "warning").pack(side="left")
+    severity_labels = {"error": "Error (red ⛔)", "warning": "Warning (yellow ⚠)"}
+    severity_menubutton = tk.Menubutton(severity_row, relief="raised")
+    severity_menubutton.pack(side="left", padx=(4, 0))
+    severity_dropdown = tk.Menu(severity_menubutton, tearoff=False)
+    severity_menubutton["menu"] = severity_dropdown
+    for value, label in severity_labels.items():
+        severity_dropdown.add_command(label=label, command=lambda v=value: severity_var.set(v))
+    severity_var.trace_add(
+        "write", lambda *_args: severity_menubutton.config(text=severity_labels[severity_var.get()])
+    )
 
     tk.Label(dialog, text="Popup message:").pack(anchor="w", padx=12, pady=(8, 0))
     message_entry = tk.Entry(dialog)
@@ -154,6 +176,7 @@ def _open_configure_checks_dialog(parent):
         instructions_text.delete("1.0", tk.END)
         instructions_text.insert("1.0", q["instructions"])
 
+    refresh_menu()
     selected.trace_add("write", load_selected)
     load_selected()
 
@@ -265,7 +288,11 @@ def open_settings_window(on_change=None):
     icon.set_window_icon(root)
     root.title("Jev Send Guard — Settings")
     root.geometry("380x680")
-    root.resizable(False, False)
+    root.minsize(380, 420)
+    # Resizable, not fixed: this window has grown to six stacked sections
+    # (watched apps, checks, API key, usage) and a fixed height risks
+    # clipping the bottom on a smaller display or larger system font scale.
+    root.resizable(True, True)
 
     tk.Label(root, text="Watched apps", font=("Segoe UI", 10, "bold")).pack(
         anchor="w", padx=12, pady=(12, 4)
@@ -279,9 +306,15 @@ def open_settings_window(on_change=None):
     scrollbar.pack(side="right", fill="y")
     listbox.config(yscrollcommand=scrollbar.set)
 
+    empty_hint_var = tk.StringVar()
+    tk.Label(
+        root, textvariable=empty_hint_var, fg="#5f6368", wraplength=340, justify="left"
+    ).pack(anchor="w", padx=12, pady=(4, 0))
+
     def refresh_list():
         listbox.delete(0, tk.END)
-        for app in config.list_apps():
+        apps = config.list_apps()
+        for app in apps:
             domains = app.get("domains")
             if domains:
                 scope = f" @ {', '.join(domains)}"
@@ -290,14 +323,22 @@ def open_settings_window(on_change=None):
             else:
                 scope = ""
             listbox.insert(tk.END, f"{app['label']}  ({app['process_name']}){scope}")
+        empty_hint_var.set(
+            "" if apps else 'Nothing is watched yet — click "Add app..." below to get started.'
+        )
 
     refresh_list()
 
     add_status_var = tk.StringVar()
 
+    def flash_status(message):
+        add_status_var.set(message)
+        root.after(2000, lambda: add_status_var.set(""))
+
     def do_remove():
         selection = listbox.curselection()
         if not selection:
+            flash_status("Select an app in the list first.")
             return
         app = config.list_apps()[selection[0]]
         if messagebox.askyesno("Remove app", f"Stop watching {app['label']!r}?", parent=root):
@@ -412,6 +453,7 @@ def open_settings_window(on_change=None):
     def do_edit_selected():
         selection = listbox.curselection()
         if not selection:
+            flash_status("Select an app in the list first.")
             return
         app = config.list_apps()[selection[0]]
 
