@@ -61,8 +61,18 @@ def start_watch_thread():
                 continue
 
             last_wait_reason = None
-            if run_watch_loop(stop_event, pause_event) == 0:
-                return
+            try:
+                if run_watch_loop(stop_event, pause_event) == 0:
+                    return
+            except Exception:
+                # This runs as a daemon thread: an uncaught exception here
+                # would otherwise just print a traceback and silently kill
+                # the thread, leaving the tray icon looking "running"
+                # forever while nothing is ever checked again. Log and
+                # retry instead of dying — config.py's own load_config()
+                # already fails closed on a corrupted file, but this is
+                # the backstop for anything else unexpected.
+                log.exception("watch loop crashed unexpectedly; retrying in 2s")
             stop_event.wait(2)
 
     thread = threading.Thread(target=watch, daemon=True)
