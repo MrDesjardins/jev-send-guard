@@ -520,6 +520,36 @@ the whole window fresh rather than per-feature:
   and the window has grown to six stacked sections over several
   features. Made it resizable with a sane minimum size instead.
 
+### Milestone 8 (popup redesign) — 2026-09-18
+
+Both popup renderers got a visual pass — same idea on each platform,
+implemented separately since a plain Tk window can't host AppKit's
+non-activating NSPanel and vice versa:
+
+- **Windows** (`core/notifier.py`): a colored severity accent bar down
+  the left edge, the icon (⛔/⚠/✓) given its own larger, separated column
+  instead of being crammed into the message string, a 1px border
+  standing in for a drop shadow (`tkinter` can't give a plain window a
+  real one), and rounded corners via Windows 11's DWM API
+  (`DwmSetWindowAttribute`, `DWMWA_WINDOW_CORNER_PREFERENCE`) — a no-op
+  (not a crash) on Windows 10, where the attribute isn't supported.
+- **macOS** (`notification_app.py`): the same accent bar + separated icon
+  layout, plus real rounded corners and a native drop shadow via a
+  layer-backed content view (`setWantsLayer_`/`CALayer.cornerRadius`) and
+  `setHasShadow_(True)`, replacing the previous flat opaque panel.
+
+The macOS styling is wrapped in its own try/except that falls back to the
+old flat panel on any failure — this is new AppKit code that, like the
+rest of this project's macOS-specific work, hasn't been run against a
+real pyobjc/AppKit build yet, and a cosmetic failure must never be the
+reason the popup doesn't show at all. Windows' equivalent code was
+exercised via headless import/construction checks (Xvfb itself is
+unreliable for live `tkinter` rendering in this dev sandbox, as
+documented earlier in this file) but not visually confirmed on a real
+Windows session either — both need that pass before considering this
+done.
+
+
 ## Rough milestones
 
 1. **Spike accessibility read on both OSes** — a throwaway script per

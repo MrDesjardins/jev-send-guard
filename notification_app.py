@@ -1,4 +1,11 @@
-"""Native, non-activating macOS popup used by Jev Send Guard."""
+"""Native, non-activating macOS popup used by Jev Send Guard.
+
+Visually matches core/notifier.py's Windows Tk popup — same colors, same
+icons, same "colored accent bar + icon + text" card layout — even though
+the two are built with entirely different toolkits (AppKit here; a plain
+Tk window can't host a non-activating panel the way NSPanel can, and
+NSPanel doesn't exist outside AppKit).
+"""
 
 import json
 import sys
@@ -15,6 +22,9 @@ log = setup_logging()
 
 WIDTH = 300
 MARGIN = 14
+ACCENT_WIDTH = 5
+ICON_COLUMN_WIDTH = 22
+CARD_COLOR = (0.145, 0.157, 0.169)  # matches core/notifier.py's BG "#26282b"
 
 
 class PassivePanel(AppKit.NSPanel):
@@ -74,9 +84,11 @@ def _position(panel, anchor_rect):
     log.debug("native popup: anchor=%r frame_origin=(%.0f, %.0f) size=(%.0f, %.0f)", anchor_rect, x, y, frame.size.width, frame.size.height)
 
 
-def _label(text, color, y, height, bold=False):
+def _label(text, color, y, height, x=MARGIN, width=None, bold=False, font_size=12):
+    if width is None:
+        width = WIDTH - x - MARGIN
     field = AppKit.NSTextField.alloc().initWithFrame_(
-        Foundation.NSMakeRect(MARGIN, y, WIDTH - MARGIN * 2, height)
+        Foundation.NSMakeRect(x, y, width, height)
     )
     field.setStringValue_(text)
     field.setEditable_(False)
@@ -84,10 +96,51 @@ def _label(text, color, y, height, bold=False):
     field.setBezeled_(False)
     field.setDrawsBackground_(False)
     field.setTextColor_(color)
-    field.setFont_(AppKit.NSFont.boldSystemFontOfSize_(12) if bold else AppKit.NSFont.systemFontOfSize_(12))
+    field.setFont_(
+        AppKit.NSFont.boldSystemFontOfSize_(font_size) if bold else AppKit.NSFont.systemFontOfSize_(font_size)
+    )
     field.setLineBreakMode_(AppKit.NSLineBreakByWordWrapping)
     field.setUsesSingleLineMode_(False)
     return field
+
+
+def _row(content, icon, text, color, y, height=22, bold=False):
+    """An icon + text pair on one line, the icon in its own column so it
+    reads as a real glyph rather than being crammed into the text string —
+    matches core/notifier.py's Windows layout."""
+    content.addSubview_(
+        _label(icon, color, y, height, x=MARGIN, width=ICON_COLUMN_WIDTH, font_size=15)
+    )
+    text_x = MARGIN + ICON_COLUMN_WIDTH + 6
+    content.addSubview_(
+        _label(text, color, y, height, x=text_x, width=WIDTH - text_x - MARGIN, bold=bold)
+    )
+
+
+def _apply_card_style(panel, accent_color):
+    """Rounded corners + native drop shadow via a layer-backed content
+    view, with a colored accent bar down the left edge. Best-effort and
+    never allowed to be the reason the popup doesn't show at all — if
+    anything here fails (untested against a real pyobjc/AppKit build; see
+    PLAN.md), the caller falls back to the old flat opaque panel."""
+    content = panel.contentView()
+    content.setWantsLayer_(True)
+    layer = content.layer()
+    layer.setCornerRadius_(10.0)
+    layer.setMasksToBounds_(True)
+    layer.setBackgroundColor_(_color(*CARD_COLOR).CGColor())
+
+    panel.setOpaque_(False)
+    panel.setBackgroundColor_(AppKit.NSColor.clearColor())
+    panel.setHasShadow_(True)
+
+    height = content.frame().size.height
+    accent = AppKit.NSView.alloc().initWithFrame_(
+        Foundation.NSMakeRect(0, 0, ACCENT_WIDTH, height)
+    )
+    accent.setWantsLayer_(True)
+    accent.layer().setBackgroundColor_(accent_color.CGColor())
+    content.addSubview_(accent)
 
 
 def show(payload):
@@ -105,8 +158,6 @@ def show(payload):
         AppKit.NSBackingStoreBuffered,
         False,
     )
-    panel.setBackgroundColor_(_color(0.125, 0.13, 0.14))
-    panel.setOpaque_(True)
     panel.setLevel_(AppKit.NSFloatingWindowLevel)
     panel.setHidesOnDeactivate_(False)
     panel.setBecomesKeyOnlyIfNeeded_(True)
@@ -116,31 +167,37 @@ def show(payload):
         | AppKit.NSWindowCollectionBehaviorFullScreenAuxiliary
     )
 
-    content = panel.contentView()
     if payload["kind"] == "ok":
-        content.addSubview_(_label("✓ Looks good", _color(0.51, 0.79, 0.60), 18, 22, bold=True))
+        overall_error = False
+        overall_color = _color(0.51, 0.79, 0.60)
     else:
         # Matches core/notifier.py's Windows popup: the title reflects the
         # *worst* severity actually present, not a hardcoded red — an
         # unprofessional-only (warning) result should show yellow
         # throughout, not a red title implying an error-level concern.
         overall_error = any(severity == "error" for _message, severity in items)
-        title_color = _color(0.95, 0.55, 0.51) if overall_error else _color(0.99, 0.84, 0.39)
+        overall_color = _color(0.95, 0.55, 0.51) if overall_error else _color(0.99, 0.84, 0.39)
+
+    try:
+        _apply_card_style(panel, overall_color)
+    except Exception:
+        log.exception("native popup: rounded-corner card styling failed, falling back to a flat panel")
+        panel.setBackgroundColor_(_color(*CARD_COLOR))
+        panel.setOpaque_(True)
+
+    content = panel.contentView()
+    if payload["kind"] == "ok":
+        # y=18 matches the vertical position the original (pre-accent-bar)
+        # version of this popup used for its single line of text.
+        _row(content, "✓", "Looks good", overall_color, 18, bold=True)
+    else:
         title_icon = "⛔" if overall_error else "⚠"
-        content.addSubview_(
-            _label(
-                f"{title_icon} Before you send — Jev noticed:",
-                title_color,
-                height - 34,
-                20,
-                bold=True,
-            )
-        )
+        _row(content, title_icon, "Before you send — Jev noticed:", overall_color, height - 34, height=20, bold=True)
         for index, (message, severity) in enumerate(items):
             color = _color(0.95, 0.55, 0.51) if severity == "error" else _color(0.99, 0.84, 0.39)
             icon = "⛔" if severity == "error" else "⚠"
             y = height - 62 - index * 28
-            content.addSubview_(_label(f"{icon} {message}", color, y, 22))
+            _row(content, icon, message, color, y)
 
     _position(panel, payload["anchor_rect"])
     panel.orderFrontRegardless()

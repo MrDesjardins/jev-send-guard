@@ -6,7 +6,8 @@ not even glance at. Visually the same idea as v1's in-page banner.
 Unlike v1, there's no "Send anyway"/"let me edit" choice — v2 isn't hooked
 to a send gesture at all (see PLAN.md's "why idle-based, not gesture-based"),
 so there's nothing for a button to gate. It's purely informational: it
-shows up, you glance at it, it auto-dismisses (or click it to close early).
+shows up, you glance at it, it auto-dismisses (or click Dismiss to close
+early).
 
 Both outcomes of an actual Jev check show something: `notify()` for
 concerns, `notify_ok()` (a brief green checkmark) when it came back clean.
@@ -19,6 +20,12 @@ Only one popup is ever shown at a time: each new request replaces whatever
 is currently up — otherwise a fixed "curt/impolite" warning could stay on
 screen indefinitely while a later clean result's checkmark shows up
 alongside it.
+
+Card look (accent bar + rounded corners) is shared conceptually with
+notification_app.py's native macOS panel — same colors, same icons, same
+"colored strip + icon + text" layout — even though the two are built with
+completely different toolkits (this file: tkinter; macOS: AppKit), since
+a plain Tk window can't host AppKit's non-activating panel and vice versa.
 
 Architecture note: Windows uses one persistent Tk interpreter on a dedicated
 UI thread, and each new request replaces the current popup. macOS uses a
@@ -38,9 +45,11 @@ import tkinter as tk
 
 log = logging.getLogger("jev-send-guard")
 
-WIDTH = 280
+WIDTH = 300
+ACCENT_WIDTH = 5
 SCREEN_MARGIN = 16
-BG = "#202124"
+BG = "#26282b"  # a slightly lifted "card" surface, not flat black
+BORDER = "#3c4043"  # 1px outline standing in for the drop shadow Tk can't give a plain window
 
 CONCERN_RED = "#f28b82"
 CONCERN_YELLOW = "#fdd663"
@@ -88,6 +97,43 @@ def _position(win, anchor_rect):
     win.geometry(f"{width}x{height}+{int(x)}+{int(y)}")
 
 
+def _build_card(frame, accent_color):
+    """Turns the bare Toplevel frame into a bordered card with a colored
+    severity accent bar down the left edge, and returns the padded content
+    frame everything else should be packed into."""
+    frame.configure(bg=BORDER)
+    inner = tk.Frame(frame, bg=BORDER)
+    inner.pack(fill="both", expand=True, padx=1, pady=1)  # the 1px border showing through
+
+    accent = tk.Frame(inner, bg=accent_color, width=ACCENT_WIDTH)
+    accent.pack(side="left", fill="y")
+
+    content = tk.Frame(inner, bg=BG, padx=14, pady=12)
+    content.pack(side="left", fill="both", expand=True)
+    return content
+
+
+def _row(parent, icon_char, text, color, font_size=9, bold=False):
+    """An icon + text pair on one line, the icon rendered larger and given
+    its own column so it reads as a real glyph rather than being crammed
+    into the message string."""
+    row = tk.Frame(parent, bg=BG)
+    row.pack(fill="x", pady=(0, 5))
+    tk.Label(row, text=icon_char, fg=color, bg=BG, font=("Segoe UI", font_size + 4)).pack(
+        side="left", anchor="n"
+    )
+    tk.Label(
+        row,
+        text=text,
+        fg=color,
+        bg=BG,
+        font=("Segoe UI", font_size, "bold" if bold else "normal"),
+        anchor="w",
+        justify="left",
+        wraplength=WIDTH - ACCENT_WIDTH - 28 - 26,
+    ).pack(side="left", fill="x", expand=True, padx=(6, 0))
+
+
 def _build_concerns(items):
     """items: list of (message: str, severity: "error" | "warning"). The
     popup's title reflects the worst severity present; each bullet is
@@ -98,17 +144,16 @@ def _build_concerns(items):
     def build(frame, dismiss):
         overall = "error" if any(sev == "error" for _msg, sev in items) else "warning"
         overall_style = _SEVERITY_STYLE[overall]
+        content = _build_card(frame, overall_style["color"])
 
-        tk.Label(
-            frame,
-            text=f"{overall_style['icon']} Before you send — Jev noticed:",
-            fg=overall_style["color"],
-            bg=BG,
-            font=("Segoe UI", 9, "bold"),
-            anchor="w",
-            justify="left",
-            wraplength=WIDTH - 28,
-        ).pack(fill="x")
+        _row(
+            content,
+            overall_style["icon"],
+            "Before you send — Jev noticed:",
+            overall_style["color"],
+            font_size=10,
+            bold=True,
+        )
 
         for message, severity in items:
             # Defense in depth: jev_client.get_question_defs() already
@@ -117,26 +162,17 @@ def _build_concerns(items):
             # would raise inside a tkinter callback Tk swallows silently,
             # meaning the concern gets counted but the popup never appears.
             style = _SEVERITY_STYLE.get(severity, _SEVERITY_STYLE["warning"])
-            tk.Label(
-                frame,
-                text=f"{style['icon']} {message}",
-                fg=style["color"],
-                bg=BG,
-                font=("Segoe UI", 9),
-                anchor="w",
-                justify="left",
-                wraplength=WIDTH - 28,
-            ).pack(fill="x", pady=(4, 0))
+            _row(content, style["icon"], message, style["color"])
 
         dismiss_label = tk.Label(
-            frame,
+            content,
             text="Dismiss",
             fg="#8ab4f8",
             bg=BG,
             font=("Segoe UI", 9, "underline"),
             cursor="hand2",
         )
-        dismiss_label.pack(anchor="e", pady=(8, 0))
+        dismiss_label.pack(anchor="e", pady=(4, 0))
         dismiss_label.bind("<Button-1>", dismiss)
 
     return build
@@ -144,14 +180,8 @@ def _build_concerns(items):
 
 def _build_ok():
     def build(frame, _dismiss):
-        tk.Label(
-            frame,
-            text="✓ Looks good",
-            fg=OK_GREEN,
-            bg=BG,
-            font=("Segoe UI", 9, "bold"),
-            anchor="w",
-        ).pack(fill="x")
+        content = _build_card(frame, OK_GREEN)
+        _row(content, "✓", "Looks good", OK_GREEN, font_size=10, bold=True)
 
     return build
 
@@ -180,11 +210,11 @@ def _run_ui_thread():
         win.overrideredirect(True)
         win.attributes("-topmost", True)
         try:
-            win.attributes("-alpha", 0.97)
+            win.attributes("-alpha", 0.98)
         except tk.TclError:
             pass
 
-        frame = tk.Frame(win, bg=BG, padx=14, pady=12)
+        frame = tk.Frame(win)
         frame.pack(fill="both", expand=True)
 
         def dismiss(_event=None):
@@ -200,6 +230,7 @@ def _run_ui_thread():
 
         _position(win, anchor_rect)
         _make_non_activating_on_windows(win)
+        _round_corners_on_windows(win)
         win.deiconify()
         win.after(auto_dismiss_ms, dismiss)
 
@@ -248,6 +279,29 @@ def _make_non_activating_on_windows(win):
         )  # NOSIZE | NOMOVE | NOZORDER | NOACTIVATE | FRAMECHANGED
     except Exception:
         log.exception("could not make Windows popup non-activating")
+
+
+def _round_corners_on_windows(win):
+    """Windows 11's DWM can round a plain Tk window's corners for a more
+    modern "card" look. A pure cosmetic best-effort: silently does nothing
+    on Windows 10 (the attribute isn't supported there — DwmSetWindowAttribute
+    just returns a failure HRESULT, not an exception) or if anything else
+    about this call goes wrong. Never allowed to affect whether the popup
+    itself shows."""
+    if sys.platform != "win32":
+        return
+    try:
+        import ctypes
+
+        DWMWA_WINDOW_CORNER_PREFERENCE = 33
+        DWMWCP_ROUND = 2
+        hwnd = win.winfo_id()
+        preference = ctypes.c_int(DWMWCP_ROUND)
+        ctypes.windll.dwmapi.DwmSetWindowAttribute(
+            hwnd, DWMWA_WINDOW_CORNER_PREFERENCE, ctypes.byref(preference), ctypes.sizeof(preference)
+        )
+    except Exception:
+        pass
 
 
 def _enqueue(build_content, anchor_rect, auto_dismiss_ms):
