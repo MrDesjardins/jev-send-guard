@@ -12,49 +12,16 @@ without restarting the loop.
 import sys
 import time
 
+from core import api_key as api_key_store
+from core import config
+from core import jev_client
+from core import notifier
+from core import pre_filter
+from core import stats
+from core.idle_watcher import IdleWatcher
 from core.logging_setup import LOG_PATH, setup_logging
 
 log = setup_logging()
-
-# Timed individually rather than as one aggregate: tray_app.py's own
-# per-import timing showed "import core.watch_loop" alone taking 13+
-# seconds even though core.api_key/core.config (also imported here, but
-# already cached from tray_app.py's earlier separate imports) were fast —
-# this narrows down which of the *remaining* imports is the actual cost.
-_t = time.perf_counter()
-from core import api_key as api_key_store  # noqa: E402
-
-log.debug("watch_loop: import core.api_key took %.2fs", time.perf_counter() - _t)
-
-_t = time.perf_counter()
-from core import config  # noqa: E402
-
-log.debug("watch_loop: import core.config took %.2fs", time.perf_counter() - _t)
-
-_t = time.perf_counter()
-from core import jev_client  # noqa: E402
-
-log.debug("watch_loop: import core.jev_client took %.2fs", time.perf_counter() - _t)
-
-_t = time.perf_counter()
-from core import notifier  # noqa: E402
-
-log.debug("watch_loop: import core.notifier took %.2fs", time.perf_counter() - _t)
-
-_t = time.perf_counter()
-from core import pre_filter  # noqa: E402
-
-log.debug("watch_loop: import core.pre_filter took %.2fs", time.perf_counter() - _t)
-
-_t = time.perf_counter()
-from core import stats  # noqa: E402
-
-log.debug("watch_loop: import core.stats took %.2fs", time.perf_counter() - _t)
-
-_t = time.perf_counter()
-from core.idle_watcher import IdleWatcher  # noqa: E402
-
-log.debug("watch_loop: import core.idle_watcher took %.2fs", time.perf_counter() - _t)
 
 POLL_INTERVAL_SEC = 0.3
 
@@ -100,10 +67,8 @@ def run(stop_event, pause_event=None, backend=None):
         )
         return 1
 
-    # Fire-and-forget: gets the one-time httpx import/client cost (see
-    # jev_client._get_client()) out of the way in the background instead
-    # of paying it the moment you first type something that gets
-    # evaluated, which looked like the tool itself had hung.
+    # Prepare the HTTP client without blocking the watch loop or the first
+    # draft evaluation.
     jev_client.warm_up_async()
 
     log.info("Watching:")

@@ -10,7 +10,6 @@ import logging
 import re
 import sys
 import threading
-import time
 import tkinter as tk
 from tkinter import messagebox, simpledialog
 
@@ -285,9 +284,7 @@ def _open_configure_checks_dialog(parent):
 def open_settings_window(on_change=None):
     """Blocking until the window is closed. `on_change`, if given, is
     called (no args) whenever the watched-app list changes."""
-    _open_start = time.perf_counter()
     root = tk.Tk()
-    log.debug("Settings: tk.Tk() root created in %.2fs", time.perf_counter() - _open_start)
     icon.set_window_icon(root)
     root.title("Jev Send Guard — Settings")
     root.geometry("380x680")
@@ -488,9 +485,7 @@ def open_settings_window(on_change=None):
     key_entry = tk.Entry(key_frame, show="•")
     key_entry.pack(side="left", fill="x", expand=True)
 
-    _t = time.perf_counter()
     existing_key = api_key_store.get_api_key()
-    log.debug("Settings: api_key_store.get_api_key() took %.2fs", time.perf_counter() - _t)
     if existing_key:
         key_entry.insert(0, existing_key)
 
@@ -544,5 +539,4 @@ def open_settings_window(on_change=None):
 
     tk.Button(root, text="Close", command=root.destroy).pack(pady=16)
 
-    log.debug("Settings: window built, showing after %.2fs total", time.perf_counter() - _open_start)
     root.mainloop()

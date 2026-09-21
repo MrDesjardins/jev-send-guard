@@ -550,97 +550,14 @@ Windows session either — both need that pass before considering this
 done.
 
 
-### Milestone 9 (icon + startup-latency diagnostics) — 2026-09-18
+### Milestone 9 (icon redesign) — 2026-09-18
 
-Two things reported after the popup redesign:
-
-- **The tray/window icon was still a plain flat circle.** `core/icon.py`
+The tray/window icon was still a plain flat circle. `core/icon.py`
   was never actually redesigned since it was first added — a deliberate
   "no external asset file" placeholder that just never got revisited.
   Replaced with a rounded badge + white checkmark glyph, rendered and
   visually checked at both full size and actual tray-icon size (32px) —
   still reads clearly that small, which a bare dot didn't really either.
-- **Tray app startup and opening Settings reportedly take ~5s.** This is
-  the same category of complaint as Milestone 1's original Windows
-  startup investigation (traced then to `keyring`'s default backend
-  auto-discovery), but that thread ended before real numbers came back
-  confirming the fix actually held under real use — `keyring`'s Windows
-  Credential Manager backend, even with discovery skipped via explicit
-  `set_keyring()`, could still just be inherently slow on a given
-  machine (e.g. one on a domain, where Credential Manager access can
-  involve policy/AD round-trips). Rather than guess a third fix blindly,
-  added per-import timing to `tray_app.py`'s startup and a timed
-  `get_api_key()` call plus overall build time to
-  `settings_window.py`'s `open_settings_window()` — both logged at DEBUG
-  (`~/.jev-send-guard/agent.log` always; console too with `JEV_DEBUG=1`).
-  **Needs the actual numbers from a real run to know where the 5s
-  actually goes** before attempting another fix.
-
-
-### Milestone 10 (found the 5s startup cost) — 2026-09-18
-
-Real numbers from a live Windows run (see Milestone 9) pinned it down
-precisely: `import core.jev_client` alone took 13.63s, while every other
-import (`api_key`, `config`, `notifier`, `pre_filter`, `stats`,
-`idle_watcher`) was under 0.02s. The keyring theory from Milestone 1 was
-a red herring this whole time — `get_api_key()` measured at 0.00s on the
-same run.
-
-The actual cost was importing `httpx` and constructing its `Client`/
-`HTTPTransport` — both happened at `core/jev_client.py`'s module level,
-meaning every process that imports `core.watch_loop` (which is every
-`tray_app.py` startup and, since `open_settings_window()` also imports
-`jev_client` transitively, arguably every Settings open too, though
-Settings itself measured fast because `jev_client` was already imported
-by then) pays this cost immediately — even in a session where no Jev
-check is ever actually made. Deferred both the `import httpx` statement
-and the `Client`/`HTTPTransport` construction into a lazily-initialized,
-lock-guarded singleton (`_get_client()`) that only runs on the first real
-`check_draft()` call, with its own timing log. This doesn't make the
-underlying cost disappear (still unconfirmed whether it's `httpx`'s own
-import chain or the `HTTPTransport(local_address=...)` socket setup that's
-slow on this machine — plausibly antivirus/EDR scanning on a managed
-corporate Windows box, consistent with the git author's `@roblox.com`
-address) but moves it from "every app startup" to "only if you actually
-type something that gets evaluated," which is the only place it's
-unavoidable anyway.
-
-
-### Milestone 11 (background warm-up) — 2026-09-18
-
-Deferring httpx to first use (Milestone 10) fixed startup speed but just
-moved the same ~13s wait to the first message that actually gets
-evaluated — arguably worse, since at that point it looks like the tool
-itself has hung rather than "the app is starting up."
-
-Added `jev_client.warm_up_async()`: fires the same one-time
-import+construct work in a background daemon thread instead of waiting
-for a real check to trigger it. Called once from `watch_loop.run()`
-(covering both `tray_app.py` and `agent.py`, the two things that call it)
-right after the watched-apps/API-key checks pass, so it starts racing in
-the background the moment the app is actually going to run — not before
-(no point warming up if there's nothing to watch or no key set). Safe to
-call redundantly: `_get_client()`'s lock+cache ensures the real work only
-ever happens once, and a real check that arrives before warm-up finishes
-just blocks on that same lock rather than double-doing the work.
-
-This doesn't eliminate the underlying ~13s cost, only moves it earlier
-so it's very likely finished by the time you actually pause on a
-message worth checking. The root cause itself is still unconfirmed —
-best working theory, given the measured cost is consistent and one-time
-per process and the git author's `@roblox.com` address suggests a
-managed corporate machine: antivirus/EDR software commonly hooks file
-reads and synchronously scans each new file the first time a process
-touches it, and `httpx`'s import chain touches several packages
-(`httpcore`, `certifi`, `h11`, `sniffio`/`anyio`, `idna`) for the first
-time in the process. Equally plausible: the `HTTPTransport(local_address=
-"0.0.0.0")` call causing an intercepted first raw socket creation.
-Neither has been confirmed — that would need testing directly on the
-affected machine (e.g. temporarily excluding this working directory from
-real-time AV scanning, purely to test the hypothesis) rather than
-anything fixable from this environment.
-
-
 ## Rough milestones
 
 1. **Spike accessibility read on both OSes** — a throwaway script per

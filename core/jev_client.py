@@ -39,14 +39,7 @@ _client = None
 
 
 def _get_client():
-    """Importing httpx and constructing its Client/HTTPTransport is
-    deferred to the first actual check rather than paid at module-import
-    time. Measured at 13+ seconds on one real machine — since
-    core/watch_loop.py imports this module, every app startup and every
-    Settings-window open paid that cost even in a session where no Jev
-    call was ever made. Cached after the first call, same as the eager
-    version was, so this doesn't cost anything on repeat checks.
-    """
+    """Return the shared HTTP client, creating it only when needed."""
     global _client
     if _client is None:
         with _client_lock:
@@ -73,17 +66,10 @@ def _get_client():
 
 
 def warm_up_async():
-    """Kicks off the import+construction in a background thread instead
-    of waiting for the first real check to trigger it — deferring it
-    (see _get_client()) fixed startup being slow, but just moved the same
-    wait to the first thing you type that actually gets evaluated, which
-    is arguably worse (it now looks like the tool itself hung). Safe to
-    call more than once: _get_client()'s lock ensures the work only
-    happens once no matter how many callers race for it, and this
-    function never blocks the caller — the watch loop keeps polling while
-    it happens. If a real check arrives before warm-up finishes, it just
-    blocks on the same lock until that one-time init completes, same as
-    it would have without warming up at all.
+    """Initialize the shared HTTP client without blocking the caller.
+
+    Repeated calls are safe: `_get_client()` creates the client once, and
+    a check that races with this warm-up uses that same client.
     """
     threading.Thread(target=_get_client, daemon=True).start()
 
