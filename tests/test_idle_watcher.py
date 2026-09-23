@@ -55,3 +55,13 @@ def test_initial_none_observation_never_becomes_due():
     w.observe(None)
     t[0] = 1.1
     assert w.due() is None
+
+
+def test_idle_seconds_can_be_changed_live():
+    t = [0.0]
+    w = IdleWatcher(idle_seconds=1.0, now=lambda: t[0])
+    w.observe("hello")
+    t[0] = 0.5
+    assert w.due() is None
+    w.idle_seconds = 0.4
+    assert w.due() == "hello"

@@ -9,12 +9,11 @@ so there's nothing for a button to gate. It's purely informational: it
 shows up, you glance at it, it auto-dismisses (or click Dismiss to close
 early).
 
-Both outcomes of an actual Jev check show something: `notify()` for
-concerns, `notify_ok()` (a brief green checkmark) when it came back clean.
-Given the call can take several seconds (see jev_client.py's latency
-warning), silence on the clean path is easy to mistake for "still working"
-or "broken" — showing something either way makes it legible that a check
-actually ran.
+Every actual Jev check first shows a fixed progress panel with one row per
+question.  It is then replaced by the complete stable result, including
+clean rows as well as concerns.  Given the call can take several seconds
+(see jev_client.py's latency warning), the immediate neutral feedback makes
+the guard feel responsive without streaming jumpy verdicts.
 
 Only one popup is ever shown at a time: each new request replaces whatever
 is currently up — otherwise a fixed "curt/impolite" warning could stay on
@@ -45,7 +44,10 @@ import tkinter as tk
 
 log = logging.getLogger("jev-send-guard")
 
-WIDTH = 300
+# The progress/result card has four labelled rows.  Give their concise
+# verdicts enough room to stay on one line rather than truncating them at the
+# editor's edge.
+WIDTH = 380
 ACCENT_WIDTH = 5
 SCREEN_MARGIN = 16
 BG = "#26282b"  # a slightly lifted "card" surface, not flat black
@@ -54,6 +56,7 @@ BORDER = "#3c4043"  # 1px outline standing in for the drop shadow Tk can't give 
 CONCERN_RED = "#f28b82"
 CONCERN_YELLOW = "#fdd663"
 OK_GREEN = "#81c995"
+CHECKING_GRAY = "#bdc1c6"
 
 _SEVERITY_STYLE = {
     "error": {"icon": "⛔", "color": CONCERN_RED},
@@ -182,6 +185,73 @@ def _build_ok():
     def build(frame, _dismiss):
         content = _build_card(frame, OK_GREEN)
         _row(content, "✓", "Looks good", OK_GREEN, font_size=10, bold=True)
+
+    return build
+
+
+def _build_checking(labels):
+    """A fixed-size progress panel, shown while one batched Jev call runs."""
+    def build(frame, _dismiss):
+        content = _build_card(frame, CHECKING_GRAY)
+        _row(content, "◌", "Jev is checking your draft", CHECKING_GRAY, font_size=10, bold=True)
+        for label in labels:
+            _row(content, "◌", f"{label}: Checking…", CHECKING_GRAY)
+
+    return build
+
+
+def _build_results(rows):
+    """Render every check in a stable layout after a progress panel.
+
+    Each row is ``(label, concern, message, severity)``.  Keeping the same
+    title-plus-one-row-per-question layout as `_build_checking` makes the
+    transition legible rather than a sequence of popups that move or grow.
+    """
+    def build(frame, _dismiss):
+        flagged = [row for row in rows if row[1]]
+        overall = "error" if any(row[3] == "error" for row in flagged) else "warning"
+        accent = (
+            _SEVERITY_STYLE[overall]["color"] if flagged else OK_GREEN
+        )
+        content = _build_card(frame, accent)
+        title = "Before you send — Jev noticed:" if flagged else "Jev checked your draft"
+        title_icon = _SEVERITY_STYLE[overall]["icon"] if flagged else "✓"
+        _row(content, title_icon, title, accent, font_size=10, bold=True)
+        for label, concern, message, severity in rows:
+            if concern:
+                style = _SEVERITY_STYLE.get(severity, _SEVERITY_STYLE["warning"])
+                _row(content, style["icon"], f"{label}: {message}", style["color"])
+            else:
+                _row(content, "✓", f"{label}: Looks good", OK_GREEN)
+
+    return build
+
+
+def _build_unavailable(labels):
+    """Explain that a batch timed out instead of silently removing progress."""
+    def build(frame, _dismiss):
+        style = _SEVERITY_STYLE["warning"]
+        content = _build_card(frame, style["color"])
+        _row(
+            content,
+            style["icon"],
+            "Jev couldn't finish checking",
+            style["color"],
+            font_size=10,
+            bold=True,
+        )
+        for label in labels:
+            _row(content, "—", f"{label}: Not checked", CHECKING_GRAY)
+
+    return build
+
+
+def _build_service_issue(message):
+    def build(frame, _dismiss):
+        style = _SEVERITY_STYLE["warning"]
+        content = _build_card(frame, style["color"])
+        _row(content, style["icon"], "TypeSafe Jev backend issue", style["color"], font_size=10, bold=True)
+        _row(content, style["icon"], f"{message}. Your draft wasn't checked.", style["color"])
 
     return build
 
@@ -328,6 +398,16 @@ def _show_macos_panel(kind, items, anchor_rect, auto_dismiss_ms):
         with _popup_process_lock:
             if _popup_process is not None and _popup_process.poll() is None:
                 _popup_process.terminate()
+                # A checking panel and its result use the same non-activating
+                # AppKit panel class.  Starting the replacement while macOS
+                # is still tearing down the old helper can leave only the
+                # close animation visible.  Wait for the short-lived helper
+                # to exit before creating the next one.
+                try:
+                    _popup_process.wait(timeout=0.25)
+                except subprocess.TimeoutExpired:
+                    _popup_process.kill()
+                    _popup_process.wait()
             _popup_process = subprocess.Popen(
                 [sys.executable, str(helper), payload],
                 stdout=subprocess.DEVNULL,
@@ -363,6 +443,44 @@ def notify(items, anchor_rect=None):
         _show_macos_panel("concerns", items, anchor_rect, 8000)
     else:
         _enqueue(_build_concerns(items), anchor_rect, 8000)
+
+
+def notify_checking(labels, anchor_rect=None):
+    """Show immediate, neutral progress for every question in a batch."""
+    if sys.platform == "darwin":
+        _show_macos_panel("checking", labels, anchor_rect, 10000)
+    else:
+        _enqueue(_build_checking(labels), anchor_rect, 10000)
+
+
+def notify_results(rows, anchor_rect=None):
+    """Replace the progress panel with the complete, stable batch result."""
+    if sys.platform == "darwin":
+        # JSON turns tuples into lists, which notification_app.py handles
+        # identically.  Use dictionaries here so the payload stays explicit.
+        payload_rows = [
+            {"label": label, "concern": concern, "message": message, "severity": severity}
+            for label, concern, message, severity in rows
+        ]
+        _show_macos_panel("results", payload_rows, anchor_rect, 6000)
+    else:
+        _enqueue(_build_results(rows), anchor_rect, 6000)
+
+
+def notify_unavailable(labels, anchor_rect=None):
+    """Replace progress with an explicit, non-judgmental request failure."""
+    if sys.platform == "darwin":
+        _show_macos_panel("unavailable", labels, anchor_rect, 4500)
+    else:
+        _enqueue(_build_unavailable(labels), anchor_rect, 4500)
+
+
+def notify_service_issue(message, anchor_rect=None):
+    """Explain a failed check when TypeSafe itself reports an API incident."""
+    if sys.platform == "darwin":
+        _show_macos_panel("service_issue", [message], anchor_rect, 7000)
+    else:
+        _enqueue(_build_service_issue(message), anchor_rect, 7000)
 
 
 def notify_ok(anchor_rect=None):

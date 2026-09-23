@@ -287,7 +287,7 @@ def open_settings_window(on_change=None):
     root = tk.Tk()
     icon.set_window_icon(root)
     root.title("Jev Send Guard — Settings")
-    root.geometry("380x680")
+    root.geometry("380x760")
     root.minsize(380, 420)
     # Resizable, not fixed: this window has grown to six stacked sections
     # (watched apps, checks, API key, usage) and a fixed height risks
@@ -475,6 +475,92 @@ def open_settings_window(on_change=None):
     tk.Button(
         root, text="Configure checks...", command=lambda: _open_configure_checks_dialog(root)
     ).pack(anchor="w", padx=12, pady=(4, 0))
+
+    tk.Label(root, text="Delay before checking", font=("Segoe UI", 10, "bold")).pack(
+        anchor="w", padx=12, pady=(16, 4)
+    )
+
+    delay_frame = tk.Frame(root)
+    delay_frame.pack(fill="x", padx=12)
+
+    def allow_delay_keystroke(proposed):
+        # Block obviously non-numeric input as it's typed; range and format
+        # are fully checked on Save by config.validate_idle_seconds().
+        return re.fullmatch(r"[0-9]*[.,]?[0-9]*", proposed) is not None and len(proposed) <= 6
+
+    delay_entry = tk.Entry(
+        delay_frame,
+        width=8,
+        validate="key",
+        validatecommand=(root.register(allow_delay_keystroke), "%P"),
+    )
+    delay_entry.pack(side="left")
+    tk.Label(delay_frame, text="seconds").pack(side="left", padx=(4, 0))
+
+    delay_default_fg = delay_entry.cget("foreground")
+    delay_status_var = tk.StringVar()
+    delay_status_label = tk.Label(
+        root, textvariable=delay_status_var, fg="#81c995", wraplength=340, justify="left"
+    )
+
+    def show_delay(seconds):
+        delay_entry.delete(0, tk.END)
+        delay_entry.insert(0, f"{seconds:g}")
+
+    def flash_delay(message, error=False):
+        delay_status_label.config(fg="#d93025" if error else "#81c995")
+        delay_entry.config(foreground="#d93025" if error else delay_default_fg)
+        delay_status_var.set(message)
+        if not error:
+            root.after(2000, lambda: delay_status_var.set(""))
+
+    def do_save_delay(_event=None):
+        try:
+            seconds = config.set_idle_seconds(delay_entry.get())
+        except ValueError as exc:
+            flash_delay(str(exc), error=True)
+            return
+        show_delay(seconds)
+        flash_delay("Saved.")
+        if on_change:
+            on_change()
+
+    def do_reset_delay():
+        config.reset_idle_seconds()
+        show_delay(config.DEFAULT_IDLE_SECONDS)
+        flash_delay("Reset to default.")
+        if on_change:
+            on_change()
+
+    def clear_delay_error(event=None):
+        # The Return that just triggered Save also fires a KeyRelease; don't
+        # let it wipe the error that Save just displayed.
+        if event is not None and event.keysym in ("Return", "KP_Enter"):
+            return
+        if delay_entry.cget("foreground") != delay_default_fg:
+            delay_entry.config(foreground=delay_default_fg)
+            delay_status_var.set("")
+
+    show_delay(config.get_idle_seconds())
+    delay_entry.bind("<Return>", do_save_delay)
+    delay_entry.bind("<KeyRelease>", clear_delay_error, add="+")
+    tk.Button(delay_frame, text="Save", command=do_save_delay).pack(side="left", padx=(8, 0))
+    tk.Button(delay_frame, text="Reset to default", command=do_reset_delay).pack(
+        side="left", padx=(8, 0)
+    )
+
+    tk.Label(
+        root,
+        text=(
+            "How long you must pause typing before the draft is checked "
+            f"({config.MIN_IDLE_SECONDS:g}–{config.MAX_IDLE_SECONDS:g}s, "
+            f"default {config.DEFAULT_IDLE_SECONDS:g}s)."
+        ),
+        fg="#5f6368",
+        wraplength=340,
+        justify="left",
+    ).pack(anchor="w", padx=12, pady=(4, 0))
+    delay_status_label.pack(anchor="w", padx=12)
 
     tk.Label(root, text="TypeSafe API key", font=("Segoe UI", 10, "bold")).pack(
         anchor="w", padx=12, pady=(16, 4)

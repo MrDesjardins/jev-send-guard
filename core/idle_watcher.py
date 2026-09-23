@@ -8,6 +8,8 @@ import time
 
 # A short pause feels responsive while still avoiding a request on every
 # keystroke. Polling occurs every 0.3 seconds, so this is effectively 0.6–0.9s.
+# This is only the default: users can override it from Settings (stored as
+# `idle_seconds` in config.toml, see core/config.py's get_idle_seconds()).
 IDLE_SECONDS = 0.6
 
 
@@ -18,6 +20,16 @@ class IdleWatcher:
         self._last_text = None
         self._last_change_at = None
         self._last_evaluated_text = None
+
+    @property
+    def idle_seconds(self):
+        return self._idle_seconds
+
+    @idle_seconds.setter
+    def idle_seconds(self, value):
+        """Updated live by the watch loop when the setting changes; applies
+        to the pending draft too, since due() compares on each call."""
+        self._idle_seconds = value
 
     def observe(self, text):
         """Call on every poll with the focused field's current text (or

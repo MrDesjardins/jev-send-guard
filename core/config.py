@@ -32,6 +32,11 @@ Question tuning also lives here, under two separate tables:
     criteria = { true = "...", false = "..." }
     enabled = true
 
+The typing-pause delay before a draft is sent to Jev is a top-level key
+(omitted = the default in core/idle_watcher.py's IDLE_SECONDS):
+
+    idle_seconds = 0.6
+
 `questions` holds *overrides* on the four built-in questions defined in
 core/jev_client.py's QUESTIONS (edit wording/severity/enabled without
 touching the code defaults — "Reset to default" just deletes the entry
@@ -42,6 +47,7 @@ core/jev_client.py's get_question_defs().
 """
 
 import logging
+import math
 import sys
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -53,7 +59,16 @@ else:  # pragma: no cover - project requires >=3.11
 
 import tomli_w
 
+from core.idle_watcher import IDLE_SECONDS as DEFAULT_IDLE_SECONDS
+
 log = logging.getLogger("jev-send-guard")
+
+# Bounds for the user-configurable typing-pause delay. The lower bound
+# matches the watch loop's poll interval (anything shorter can't be honored
+# and would fire a Jev request on nearly every keystroke); the upper bound
+# keeps the guard useful — past ~10s the draft is usually already sent.
+MIN_IDLE_SECONDS = 0.3
+MAX_IDLE_SECONDS = 10.0
 
 CONFIG_DIR = Path.home() / ".jev-send-guard"
 CONFIG_PATH = CONFIG_DIR / "config.toml"
@@ -231,6 +246,73 @@ def is_watched(process_name, domain=None, config=None):
 def app_requires_browser_host(process_name):
     """True for known browser processes, including legacy hostless entries."""
     return is_browser_process(process_name)
+
+
+def validate_idle_seconds(value):
+    """Parse and validate a delay (number or numeric string) in seconds.
+
+    Returns the value as a float, or raises ValueError with a message
+    suitable for showing the user.
+    """
+    if isinstance(value, bool):
+        raise ValueError("Delay must be a number of seconds.")
+    if isinstance(value, str):
+        value = value.strip().replace(",", ".")
+        if not value:
+            raise ValueError("Delay is required.")
+    try:
+        seconds = float(value)
+    except (TypeError, ValueError):
+        raise ValueError("Delay must be a number of seconds, e.g. 0.6.") from None
+    if not math.isfinite(seconds):
+        raise ValueError("Delay must be a finite number of seconds.")
+    if not MIN_IDLE_SECONDS <= seconds <= MAX_IDLE_SECONDS:
+        raise ValueError(
+            f"Delay must be between {MIN_IDLE_SECONDS:g} and "
+            f"{MAX_IDLE_SECONDS:g} seconds."
+        )
+    return round(seconds, 2)
+
+
+_last_invalid_idle_value = object()
+
+
+def get_idle_seconds(config=None):
+    """The configured typing-pause delay before a draft is evaluated.
+
+    Falls back to the default for a missing or invalid value (e.g. a bad
+    manual edit of config.toml) instead of raising — this is read on every
+    poll of the watch loop.
+    """
+    global _last_invalid_idle_value
+    config = config if config is not None else load_config()
+    value = config.get("idle_seconds")
+    if value is None:
+        return DEFAULT_IDLE_SECONDS
+    try:
+        return validate_idle_seconds(value)
+    except ValueError as exc:
+        # Warn once per distinct bad value, not once per ~300ms poll.
+        if value != _last_invalid_idle_value:
+            log.warning("invalid idle_seconds %r in config.toml (%s) — using default", value, exc)
+            _last_invalid_idle_value = value
+        return DEFAULT_IDLE_SECONDS
+
+
+def set_idle_seconds(value):
+    """Validate and persist the delay. Raises ValueError if invalid."""
+    seconds = validate_idle_seconds(value)
+    config = load_config()
+    config["idle_seconds"] = seconds
+    save_config(config)
+    return seconds
+
+
+def reset_idle_seconds():
+    config = load_config()
+    if "idle_seconds" in config:
+        del config["idle_seconds"]
+        save_config(config)
 
 
 def get_question_overrides():

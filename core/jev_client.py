@@ -80,6 +80,7 @@ def warm_up_async():
 # it here so the two stay in sync.
 QUESTIONS = {
     "curt": {
+        "label": "Tone",
         "severity": "error",
         "message": "This might read as curt or blunt.",
         "instructions": (
@@ -95,6 +96,7 @@ QUESTIONS = {
         },
     },
     "missing_ask": {
+        "label": "Clear ask",
         "severity": "error",
         "message": "Doesn't seem to have a clear ask.",
         "instructions": (
@@ -112,6 +114,7 @@ QUESTIONS = {
         },
     },
     "unprofessional": {
+        "label": "Professionalism",
         "severity": "warning",
         "message": "This might read as unprofessional.",
         "instructions": (
@@ -129,6 +132,7 @@ QUESTIONS = {
         },
     },
     "impolite": {
+        "label": "Respectfulness",
         "severity": "error",
         "message": "This might read as impolite or disrespectful.",
         "instructions": (
@@ -188,6 +192,22 @@ def message_for(question_key):
     return get_question_defs()[question_key]["message"]
 
 
+def label_for(question_key, question=None):
+    """A short, stable UI label for one configured question."""
+    question = question or get_question_defs()[question_key]
+    return question.get("label") or question_key.replace("_", " ").title()
+
+
+def get_active_questions(disabled_keys=None):
+    """Return the enabled questions for one app, preserving display order."""
+    disabled_keys = set(disabled_keys or ())
+    return {
+        key: question
+        for key, question in get_question_defs().items()
+        if question.get("enabled", True) and key not in disabled_keys
+    }
+
+
 def _build_body(draft_text, questions):
     return {
         "model": MODEL,
@@ -203,7 +223,7 @@ def _build_body(draft_text, questions):
     }
 
 
-def check_draft(api_key, draft_text, disabled_keys=None):
+def check_draft(api_key, draft_text, disabled_keys=None, questions=None):
     """Returns a dict of {question_key: bool} (true = concern flagged) for
     every enabled, not-per-app-disabled question, or None ("no signal,
     treat as no concerns") on any failure. `disabled_keys` is the current
@@ -211,12 +231,11 @@ def check_draft(api_key, draft_text, disabled_keys=None):
     if not api_key:
         return None
 
-    disabled_keys = set(disabled_keys or ())
-    active_questions = {
-        key: q
-        for key, q in get_question_defs().items()
-        if q.get("enabled", True) and key not in disabled_keys
-    }
+    # The watcher passes a snapshot so the loading panel and the eventual
+    # response always contain exactly the same questions, even if Settings is
+    # edited while the request is in flight.  Keep the old public arguments
+    # for direct callers and tests.
+    active_questions = questions if questions is not None else get_active_questions(disabled_keys)
     if not active_questions:
         return {}
 

@@ -63,7 +63,9 @@ uv run tray_app.py
 Click the icon for:
 - **Settings...** — add/remove watched apps, edit which of the four checks
   run for a specific app, configure the checks themselves (wording,
-  severity, on/off) globally, set the API key, and see local usage stats
+  severity, on/off) globally, set the delay before a draft is checked
+  (how long you must pause typing; 0.3–10s, default 0.6s, applied live),
+  set the API key, and see local usage stats
   (how many checks ran, how many were flagged, broken down by check).
   Nothing is watched until you add at least one app; the default allowlist
   is empty.

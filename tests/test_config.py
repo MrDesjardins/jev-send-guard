@@ -148,3 +148,54 @@ def test_remove_nonexistent_custom_question_returns_false():
 def test_update_nonexistent_custom_question_is_a_no_op():
     config.update_custom_question("nope", severity="error")
     assert "nope" not in config.list_custom_questions()
+
+
+def test_idle_seconds_defaults_to_hardcoded_value():
+    from core.idle_watcher import IDLE_SECONDS
+
+    assert config.get_idle_seconds() == IDLE_SECONDS == config.DEFAULT_IDLE_SECONDS
+
+
+def test_idle_seconds_round_trip():
+    assert config.set_idle_seconds("1.5") == 1.5
+    assert config.get_idle_seconds() == 1.5
+    # Other config is preserved alongside it.
+    config.add_app(label="Discord", process_name="Discord.exe")
+    assert config.get_idle_seconds() == 1.5
+
+
+def test_idle_seconds_accepts_comma_decimal_and_bounds():
+    assert config.validate_idle_seconds("0,8") == 0.8
+    assert config.validate_idle_seconds(config.MIN_IDLE_SECONDS) == config.MIN_IDLE_SECONDS
+    assert config.validate_idle_seconds(config.MAX_IDLE_SECONDS) == config.MAX_IDLE_SECONDS
+    assert config.validate_idle_seconds(2) == 2.0
+
+
+@pytest.mark.parametrize(
+    "value", ["", "  ", "abc", "1.2.3", "nan", "inf", "-1", "0", "0.1", "10.5", "100", True, None]
+)
+def test_idle_seconds_rejects_invalid_values(value):
+    with pytest.raises(ValueError):
+        config.validate_idle_seconds(value)
+
+
+def test_set_idle_seconds_invalid_does_not_write():
+    config.set_idle_seconds(2)
+    with pytest.raises(ValueError):
+        config.set_idle_seconds("99")
+    assert config.get_idle_seconds() == 2.0
+
+
+def test_reset_idle_seconds_restores_default():
+    config.set_idle_seconds(3)
+    config.reset_idle_seconds()
+    assert config.get_idle_seconds() == config.DEFAULT_IDLE_SECONDS
+    assert "idle_seconds" not in config.load_config()
+
+
+def test_invalid_idle_seconds_in_file_falls_back_to_default():
+    config.CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
+    config.CONFIG_PATH.write_text('idle_seconds = "soon"\n', encoding="utf-8")
+    assert config.get_idle_seconds() == config.DEFAULT_IDLE_SECONDS
+    config.CONFIG_PATH.write_text("idle_seconds = 500\n", encoding="utf-8")
+    assert config.get_idle_seconds() == config.DEFAULT_IDLE_SECONDS
