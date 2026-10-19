@@ -44,7 +44,7 @@ import tkinter as tk
 
 log = logging.getLogger("jev-send-guard")
 
-# The progress/result card has four labelled rows.  Give their concise
+# The progress/result card has one labelled row per check.  Give their concise
 # verdicts enough room to stay on one line rather than truncating them at the
 # editor's edge.
 WIDTH = 380

@@ -35,7 +35,7 @@ def _get_backend():
 
 
 def _open_edit_app_dialog(parent, app, on_saved):
-    """Per-app tuning: which of the four questions to skip for this app
+    """Per-app tuning: which of the questions to skip for this app
     specifically (e.g. turn off `unprofessional` for a casual Discord
     server without touching anything global)."""
     dialog = tk.Toplevel(parent)
@@ -82,12 +82,12 @@ def _open_edit_app_dialog(parent, app, on_saved):
 
 def _open_configure_checks_dialog(parent):
     """Global prompt editing: instructions/message/severity/enabled for
-    each of the four built-in Jev questions, stored as overrides in
+    each of the built-in Jev questions, stored as overrides in
     config.toml (core/jev_client.py's QUESTIONS holds the real defaults —
     "Reset to default" just drops the override, it never rewrites them).
     "Add new check..." creates a fully custom question stored separately
     (core/config.py's custom_questions) since it has no code-level default
-    to fall back to — "Delete" only ever applies to those, never the four
+    to fall back to — "Delete" only ever applies to those, never the
     built-ins (disable those instead)."""
     dialog = tk.Toplevel(parent)
     icon.set_window_icon(dialog)
@@ -205,7 +205,7 @@ def _open_configure_checks_dialog(parent):
         if key not in jev_client.QUESTIONS:
             messagebox.showinfo(
                 "Not a built-in check",
-                "Only the four built-in checks can be reset. Use Delete "
+                "Only the built-in checks can be reset. Use Delete "
                 "to remove a custom check instead.",
                 parent=dialog,
             )
@@ -219,7 +219,7 @@ def _open_configure_checks_dialog(parent):
         if key in jev_client.QUESTIONS:
             messagebox.showinfo(
                 "Can't delete a built-in check",
-                "Uncheck Enabled and Save instead — the four built-in "
+                "Uncheck Enabled and Save instead — the built-in "
                 "checks can be disabled, but not removed entirely.",
                 parent=dialog,
             )

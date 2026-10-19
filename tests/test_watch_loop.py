@@ -214,7 +214,7 @@ def test_typing_discards_an_inflight_jev_result(monkeypatch):
     stop_event.set()
     thread.join(timeout=2)
 
-    assert checking == [(["Tone", "Clear ask", "Professionalism", "Respectfulness"], None)]
+    assert checking == [(["Tone", "Clear ask", "Professionalism", "Respectfulness", "Sarcasm"], None)]
     assert notified == []
 
 
@@ -235,19 +235,21 @@ def test_checking_panel_is_replaced_with_one_row_per_result(monkeypatch):
             "missing_ask": True,
             "unprofessional": False,
             "impolite": False,
+            "sarcasm": False,
         },
     )
     monkeypatch.setattr(watch_loop.stats, "record_check", lambda *_args: None)
 
     watch_loop.handle_draft("Please decide whether we should proceed.", "fake-key")
 
-    assert checking == [(["Tone", "Clear ask", "Professionalism", "Respectfulness"], None)]
+    assert checking == [(["Tone", "Clear ask", "Professionalism", "Respectfulness", "Sarcasm"], None)]
     assert results == [(
         [
             ("Tone", False, "This might read as curt or blunt.", "error"),
             ("Clear ask", True, "Doesn't seem to have a clear ask.", "error"),
             ("Professionalism", False, "This might read as unprofessional.", "warning"),
             ("Respectfulness", False, "This might read as impolite or disrespectful.", "error"),
+            ("Sarcasm", False, "This might read as sarcastic or mocking.", "error"),
         ],
         None,
     )]
@@ -267,7 +269,7 @@ def test_timeout_replaces_progress_with_an_unavailable_state(monkeypatch):
 
     watch_loop.handle_draft("Please decide whether we should proceed.", "fake-key")
 
-    expected_labels = ["Tone", "Clear ask", "Professionalism", "Respectfulness"]
+    expected_labels = ["Tone", "Clear ask", "Professionalism", "Respectfulness", "Sarcasm"]
     assert checking == [(expected_labels, None)]
     assert unavailable == [(expected_labels, None)]
 

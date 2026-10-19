@@ -13,7 +13,8 @@ def isolated_config(tmp_path, monkeypatch):
 
 def test_get_question_defs_defaults():
     defs = jev_client.get_question_defs()
-    assert set(defs) == {"curt", "missing_ask", "unprofessional", "impolite"}
+    assert set(defs) == {"curt", "missing_ask", "unprofessional", "impolite", "sarcasm"}
+    assert defs["sarcasm"]["severity"] == "error"
     assert defs["curt"]["severity"] == "error"
     assert defs["unprofessional"]["severity"] == "warning"
     assert all(q["enabled"] for q in defs.values())
@@ -50,10 +51,27 @@ def test_custom_question_is_merged_into_defs():
         severity="warning",
     )
     defs = jev_client.get_question_defs()
-    assert set(defs) == {"curt", "missing_ask", "unprofessional", "impolite", "overpromising"}
+    assert set(defs) == {"curt", "missing_ask", "unprofessional", "impolite", "sarcasm", "overpromising"}
     assert defs["overpromising"]["message"] == "This might be overpromising."
     assert jev_client.message_for("overpromising") == "This might be overpromising."
     assert jev_client.severity_of("overpromising") == "warning"
+
+
+def test_custom_question_with_a_built_in_key_does_not_shadow_it():
+    # A custom `sarcasm` question added before it became a built-in must not
+    # replace the built-in: Settings saves edits to built-in keys as
+    # overrides, which a shadowing custom entry would silently discard.
+    config.add_custom_question(
+        "sarcasm",
+        instructions="Old custom instructions",
+        message="Sarcasm Detected",
+        severity="warning",
+    )
+    config.set_question_override("sarcasm", message="Edited message")
+    defs = jev_client.get_question_defs()
+    assert defs["sarcasm"]["instructions"] == jev_client.QUESTIONS["sarcasm"]["instructions"]
+    assert defs["sarcasm"]["severity"] == "error"
+    assert defs["sarcasm"]["message"] == "Edited message"
 
 
 def test_invalid_severity_is_clamped_to_warning():
@@ -92,7 +110,7 @@ def test_custom_question_is_included_in_the_request_and_scored(monkeypatch):
     monkeypatch.setattr(jev_client._get_client(), "post", fake_post)
     result = jev_client.check_draft(
         "fake-key", "some text",
-        disabled_keys={"curt", "missing_ask", "unprofessional", "impolite"},
+        disabled_keys={"curt", "missing_ask", "unprofessional", "impolite", "sarcasm"},
     )
     assert captured["questions"] == {"overpromising"}
     assert result == {"overpromising": True}
@@ -126,6 +144,7 @@ def test_disabled_keys_param_excludes_that_question_from_the_request(monkeypatch
                     "curt": {"noul": 0.9},
                     "missing_ask": {"noul": 0.1},
                     "impolite": {"noul": 0.9},
+                    "sarcasm": {"noul": 0.2},
                 }
             }
 
@@ -137,8 +156,8 @@ def test_disabled_keys_param_excludes_that_question_from_the_request(monkeypatch
     result = jev_client.check_draft("fake-key", "some text", disabled_keys={"unprofessional"})
 
     assert "unprofessional" not in captured["questions"]
-    assert captured["questions"] == {"curt", "missing_ask", "impolite"}
-    assert result == {"curt": True, "missing_ask": False, "impolite": True}
+    assert captured["questions"] == {"curt", "missing_ask", "impolite", "sarcasm"}
+    assert result == {"curt": True, "missing_ask": False, "impolite": True, "sarcasm": False}
 
 
 def test_fails_open_on_http_error(monkeypatch):
@@ -181,6 +200,6 @@ def test_score_below_threshold_is_not_flagged(monkeypatch):
     monkeypatch.setattr(jev_client._get_client(), "post", lambda *a, **k: FakeResponse())
     result = jev_client.check_draft(
         "fake-key", "some text",
-        disabled_keys={"missing_ask", "unprofessional", "impolite"},
+        disabled_keys={"missing_ask", "unprofessional", "impolite", "sarcasm"},
     )
     assert result == {"curt": False}

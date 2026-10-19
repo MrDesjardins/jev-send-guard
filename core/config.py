@@ -37,11 +37,11 @@ The typing-pause delay before a draft is sent to Jev is a top-level key
 
     idle_seconds = 0.6
 
-`questions` holds *overrides* on the four built-in questions defined in
+`questions` holds *overrides* on the built-in questions defined in
 core/jev_client.py's QUESTIONS (edit wording/severity/enabled without
 touching the code defaults — "Reset to default" just deletes the entry
 here). `custom_questions` holds fully user-defined questions beyond the
-built-in four — deleting one removes it outright, since there's no
+built-ins — deleting one removes it outright, since there's no
 code-level default to fall back to. Both are merged by
 core/jev_client.py's get_question_defs().
 """
@@ -152,7 +152,7 @@ def get_app(process_name):
 
 
 def set_app_disabled_questions(process_name, disabled_keys):
-    """Per-app override: which of the four Jev questions to skip for this
+    """Per-app override: which of the Jev questions to skip for this
     app specifically (e.g. turn off `unprofessional` for a casual Discord
     server without affecting anything else)."""
     config = load_config()
@@ -345,7 +345,7 @@ def reset_question_override(key):
 
 
 def list_custom_questions():
-    """Fully user-defined questions beyond the built-in four. See
+    """Fully user-defined questions beyond the built-ins. See
     core/jev_client.py's get_question_defs(), which merges these in."""
     return load_config().get("custom_questions", {})
 

@@ -4,11 +4,11 @@ A small background agent that watches whatever text field currently has OS
 focus — but only in an explicit allowlist of apps you configure — and,
 after you stop typing for about a second, runs fast `noul` questions
 against [TypeSafe AI's Jev model](https://docs.typesafe.ai) on the current
-draft. Four questions ship built in (curt/blunt, missing a clear ask,
-unprofessional, impolite) and are fully editable — or you can add your own
+draft. Five questions ship built in (curt/blunt, missing a clear ask,
+unprofessional, impolite, sarcasm) and are fully editable — or you can add your own
 — from the tray's Settings window. A small popup appears anchored right
 next to the field: red for an error-severity concern (curt, missing ask,
-impolite by default), yellow for a warning (unprofessional by default),
+impolite, sarcasm by default), yellow for a warning (unprofessional by default),
 green with a checkmark if it's clean. It never blocks anything — there's no
 send gesture to hook into by design. See `PLAN.md` for the full design
 rationale, including the v1 Chrome-extension approach this replaced and why.
@@ -61,7 +61,7 @@ uv run tray_app.py
 ```
 
 Click the icon for:
-- **Settings...** — add/remove watched apps, edit which of the four checks
+- **Settings...** — add/remove watched apps, edit which of the checks
   run for a specific app, configure the checks themselves (wording,
   severity, on/off) globally, set the delay before a draft is checked
   (how long you must pause typing; 0.3–10s, default 0.6s, applied live),
@@ -87,7 +87,7 @@ Settings' **Configure checks...** lets you edit, per question: whether
 it's enabled at all, its severity (error/red vs. warning/yellow), the
 popup message, and the exact instructions sent to Jev.
 
-- The four built-in checks (curt, missing ask, unprofessional, impolite)
+- The built-in checks (curt, missing ask, unprofessional, impolite, sarcasm)
   can be edited or disabled, but not deleted — "Reset to default" drops
   your edits and goes back to the built-in wording.
 - **Add new check...** creates a fully custom question (give it a short
@@ -96,7 +96,7 @@ popup message, and the exact instructions sent to Jev.
   default to fall back to.
 
 Everything here is saved in `~/.jev-send-guard/config.toml`: edits to the
-four built-ins go under a `[questions.<name>]` table, custom questions
+built-ins go under a `[questions.<name>]` table, custom questions
 under `[custom_questions.<name>]`. Editing code is never required —
 `core/jev_client.py`'s built-in defaults are read-only and merged with
 whatever's in that file at request time.
@@ -146,6 +146,40 @@ A detailed trace always goes to `~/.jev-send-guard/agent.log`; set
 (never sent anywhere) live at `~/.jev-send-guard/stats.json`, visible from
 Settings.
 
+## Why the checks go in one request
+
+Every enabled check for a draft is sent to Jev in a **single batched
+request** (`core/jev_client.py`'s `check_draft`), rather than one request
+per check. We measured both: 100 trials, each running the two strategies
+*at the same moment* on the same draft (so both saw the same network/API
+conditions), with all 5 built-in checks enabled.
+
+![1 batched request vs 5 parallel single-question requests](docs/media/batch_vs_separate.png)
+
+| | 1 batched request (5 checks) | 5 parallel requests (1 check each) |
+|---|---|---|
+| mean | **83 ms** | 111 ms |
+| median | **74 ms** | 101 ms |
+| p90 | **119 ms** | 148 ms |
+| p99 | **164 ms** | 208 ms |
+
+- Batched was faster in **93/100** trials, ~27 ms faster at the median.
+- Separate requests must wait for the *slowest* of the 5, so tail latency
+  always works against them — and they cost 5× the API calls.
+- Verdicts matched in 98/100 trials (the 2 differences look like normal
+  model variation, not a systematic difference).
+- Unseen drafts responded just as fast as repeated ones, so server-side
+  caching didn't skew the results. Nothing came close to the 4s timeout.
+
+To reproduce (results are appended to
+`experiments/results_batch_vs_separate.csv`; delete it first for a fresh
+run):
+
+```bash
+uv run python experiments/batch_vs_separate.py
+uv run --no-project --with matplotlib python experiments/plot_batch_vs_separate.py
+```
+
 ## Tests
 
 ```bash
@@ -169,7 +203,7 @@ run, same as everything else this project has needed to validate live.
 ```
 core/                        Pure Python, OS-agnostic
   pre_filter.py               Local heuristic: should this draft even be checked?
-  jev_client.py                 Calls Jev with four noul questions, fails open on any error
+  jev_client.py                 Calls Jev with noul questions, fails open on any error
   idle_watcher.py                 Debounce: "you stopped typing, evaluate now"
   watch_loop.py                     The loop itself: shared by agent.py and tray_app.py
   notifier.py                          The popup, anchored to the field's bounding rect
@@ -189,6 +223,10 @@ install/
   install.py                  Login-item install/uninstall (Task Scheduler / launchd)
 
 tests/                        pytest suite for everything OS-independent
+
+experiments/
+  batch_vs_separate.py        Latency experiment: 1 batched Jev request vs 1 per check
+  plot_batch_vs_separate.py     Graphs its CSV into docs/media/batch_vs_separate.png
 
 tray_app.py                  Recommended entrypoint: tray icon + Settings window
 agent.py                     Headless CLI entrypoint (no tray/pause control)
