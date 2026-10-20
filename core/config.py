@@ -37,10 +37,21 @@ The typing-pause delay before a draft is sent to Jev is a top-level key
 
     idle_seconds = 0.6
 
+How long a results popup stays up (omitted = DEFAULT_POPUP_SECONDS below;
+it still closes as soon as you resume typing) is top-level too:
+
+    popup_seconds = 20
+
 Which model evaluates drafts is also top-level (omitted = "jev"); "both"
 calls Jev and Mercury in parallel and shows each one's score and latency:
 
     provider = "both"
+
+Conversation context (the channel/thread name and the last few messages
+above the text box, read from the accessibility tree — see
+core/context.py) is sent with each check unless turned off:
+
+    send_context = false
 
 `questions` holds *overrides* on the built-in questions defined in
 core/jev_client.py's QUESTIONS (edit wording/severity/enabled without
@@ -74,6 +85,12 @@ log = logging.getLogger("jev-send-guard")
 # keeps the guard useful — past ~10s the draft is usually already sent.
 MIN_IDLE_SECONDS = 0.3
 MAX_IDLE_SECONDS = 10.0
+
+# How long a results popup stays up before closing on its own. It closes
+# sooner anyway as soon as you resume typing.
+DEFAULT_POPUP_SECONDS = 15.0
+MIN_POPUP_SECONDS = 3.0
+MAX_POPUP_SECONDS = 120.0
 
 CONFIG_DIR = Path.home() / ".jev-send-guard"
 CONFIG_PATH = CONFIG_DIR / "config.toml"
@@ -253,30 +270,30 @@ def app_requires_browser_host(process_name):
     return is_browser_process(process_name)
 
 
-def validate_idle_seconds(value):
-    """Parse and validate a delay (number or numeric string) in seconds.
-
-    Returns the value as a float, or raises ValueError with a message
-    suitable for showing the user.
-    """
+def _validate_seconds(value, low, high, what, example):
+    """Parse and validate a duration (number or numeric string) in
+    seconds. Returns it as a float, or raises ValueError with a message
+    suitable for showing the user."""
     if isinstance(value, bool):
-        raise ValueError("Delay must be a number of seconds.")
+        raise ValueError(f"{what} must be a number of seconds.")
     if isinstance(value, str):
         value = value.strip().replace(",", ".")
         if not value:
-            raise ValueError("Delay is required.")
+            raise ValueError(f"{what} is required.")
     try:
         seconds = float(value)
     except (TypeError, ValueError):
-        raise ValueError("Delay must be a number of seconds, e.g. 0.6.") from None
+        raise ValueError(f"{what} must be a number of seconds, e.g. {example}.") from None
     if not math.isfinite(seconds):
-        raise ValueError("Delay must be a finite number of seconds.")
-    if not MIN_IDLE_SECONDS <= seconds <= MAX_IDLE_SECONDS:
-        raise ValueError(
-            f"Delay must be between {MIN_IDLE_SECONDS:g} and "
-            f"{MAX_IDLE_SECONDS:g} seconds."
-        )
+        raise ValueError(f"{what} must be a finite number of seconds.")
+    if not low <= seconds <= high:
+        raise ValueError(f"{what} must be between {low:g} and {high:g} seconds.")
     return round(seconds, 2)
+
+
+def validate_idle_seconds(value):
+    """Parse and validate the typing-pause delay. See _validate_seconds."""
+    return _validate_seconds(value, MIN_IDLE_SECONDS, MAX_IDLE_SECONDS, "Delay", "0.6")
 
 
 _last_invalid_idle_value = object()
@@ -320,6 +337,43 @@ def reset_idle_seconds():
         save_config(config)
 
 
+def validate_popup_seconds(value):
+    """Parse and validate how long results stay up. See _validate_seconds."""
+    return _validate_seconds(
+        value, MIN_POPUP_SECONDS, MAX_POPUP_SECONDS, "Display time", "15"
+    )
+
+
+def get_popup_seconds(config=None):
+    """How long a results popup stays up. Falls back to the default for a
+    missing or invalid value instead of raising."""
+    config = config if config is not None else load_config()
+    value = config.get("popup_seconds")
+    if value is None:
+        return DEFAULT_POPUP_SECONDS
+    try:
+        return validate_popup_seconds(value)
+    except ValueError as exc:
+        log.warning("invalid popup_seconds %r in config.toml (%s) — using default", value, exc)
+        return DEFAULT_POPUP_SECONDS
+
+
+def set_popup_seconds(value):
+    """Validate and persist the display time. Raises ValueError if invalid."""
+    seconds = validate_popup_seconds(value)
+    config = load_config()
+    config["popup_seconds"] = seconds
+    save_config(config)
+    return seconds
+
+
+def reset_popup_seconds():
+    config = load_config()
+    if "popup_seconds" in config:
+        del config["popup_seconds"]
+        save_config(config)
+
+
 PROVIDER_CHOICES = ("jev", "mercury", "both")
 DEFAULT_PROVIDER = "jev"
 
@@ -343,6 +397,20 @@ def set_provider(value):
         raise ValueError(f"provider must be one of {PROVIDER_CHOICES}")
     config = load_config()
     config["provider"] = value
+    save_config(config)
+
+
+def get_send_context(config=None):
+    """Whether conversation context (core/context.py: the place name and
+    the last few messages above the input) is read and sent with each
+    check. On unless explicitly turned off."""
+    config = config if config is not None else load_config()
+    return config.get("send_context", True) is not False
+
+
+def set_send_context(enabled):
+    config = load_config()
+    config["send_context"] = bool(enabled)
     save_config(config)
 
 

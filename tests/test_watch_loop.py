@@ -173,6 +173,7 @@ def test_disabled_questions_for_app_are_passed_through(monkeypatch):
     args, kwargs = calls[0]
     # handle_draft(due_text, anchor_rect, disabled_questions) - positional
     assert args[2] == {"unprofessional"}
+    assert kwargs["app"] == "Discord"
 
 
 def test_typing_discards_an_inflight_jev_result(monkeypatch):
@@ -241,12 +242,12 @@ def test_checking_panel_is_replaced_with_one_row_per_result(monkeypatch):
             "sarcasm": 0.3,
         },
     )
-    monkeypatch.setattr(watch_loop.stats, "record_check", lambda *_args: None)
+    monkeypatch.setattr(watch_loop.stats, "record_check", lambda *_args, **_kwargs: None)
 
     watch_loop.handle_draft("Please decide whether we should proceed.")
 
     assert checking == [(LABELS, None, ["Jev"])]
-    rows, columns, anchor = results[0]
+    rows, columns, anchor, note = results[0]
     assert rows == [
         ("Tone", False, "This might read as curt or blunt.", "error", [0.1]),
         ("Clear ask", True, "Doesn't seem to have a clear ask.", "error", [0.8]),
@@ -257,6 +258,7 @@ def test_checking_panel_is_replaced_with_one_row_per_result(monkeypatch):
     assert [name for name, _ms in columns] == ["Jev"]
     assert isinstance(columns[0][1], int)
     assert anchor is None
+    assert note == "No conversation context found"
 
 
 def test_both_providers_run_in_parallel_with_one_column_each(monkeypatch):
@@ -266,7 +268,7 @@ def test_both_providers_run_in_parallel_with_one_column_each(monkeypatch):
     both_started = threading.Barrier(2, timeout=2)
     calls = {}
 
-    def fake_check(key, _text, questions, provider):
+    def fake_check(key, _text, questions, provider, context=None):
         calls[provider] = key
         # Fails with BrokenBarrierError unless both calls are in flight at once.
         both_started.wait()
@@ -278,24 +280,32 @@ def test_both_providers_run_in_parallel_with_one_column_each(monkeypatch):
         watch_loop.notifier, "notify_results", lambda *args: results.append(args)
     )
     monkeypatch.setattr(watch_loop.jev_client, "check_draft", fake_check)
-    monkeypatch.setattr(watch_loop.stats, "record_check", recorded.append)
+    monkeypatch.setattr(
+        watch_loop.stats, "record_check", lambda outcomes, app=None: recorded.append(outcomes)
+    )
 
     watch_loop.handle_draft("Please decide whether we should proceed.")
 
     assert calls == {"jev": "fake-jev-key", "mercury": "fake-mercury-key"}
-    rows, columns, _anchor = results[0]
+    rows, columns, _anchor, _note = results[0]
     assert [name for name, _ms in columns] == ["Jev", "Mercury"]
     assert all(isinstance(ms, int) for _name, ms in columns)
     # Flagged because Mercury is confident, even though Jev isn't.
     assert rows[0] == ("Tone", True, "This might read as curt or blunt.", "error", [0.2, 0.9])
-    assert recorded == [["curt", "missing_ask", "unprofessional", "impolite", "sarcasm"]]
+    assert recorded == [{
+        "curt": "error",
+        "missing_ask": "error",
+        "unprofessional": "warning",
+        "impolite": "error",
+        "sarcasm": "error",
+    }]
 
 
 def test_one_failed_provider_still_shows_the_other(monkeypatch):
     config.set_provider("both")
     results = []
 
-    def fake_check(_key, _text, questions, provider):
+    def fake_check(_key, _text, questions, provider, context=None):
         if provider == "jev":
             return None
         return {question_key: 0.1 for question_key in questions}
@@ -305,11 +315,11 @@ def test_one_failed_provider_still_shows_the_other(monkeypatch):
         watch_loop.notifier, "notify_results", lambda *args: results.append(args)
     )
     monkeypatch.setattr(watch_loop.jev_client, "check_draft", fake_check)
-    monkeypatch.setattr(watch_loop.stats, "record_check", lambda *_args: None)
+    monkeypatch.setattr(watch_loop.stats, "record_check", lambda *_args, **_kwargs: None)
 
     watch_loop.handle_draft("Please decide whether we should proceed.")
 
-    rows, columns, _anchor = results[0]
+    rows, columns, _anchor, _note = results[0]
     assert columns[0] == ("Jev", None)
     assert columns[1][0] == "Mercury"
     assert rows[0][1] is False
@@ -358,3 +368,93 @@ def test_mercury_only_failure_does_not_consult_typesafe_status(monkeypatch):
 
     monkeypatch.setattr(watch_loop.status_client, "get_api_issue", fail_if_called)
     watch_loop.handle_draft("Please decide whether we should proceed.")
+
+
+def test_custom_questions_are_recorded_in_stats(monkeypatch, tmp_path):
+    config.add_custom_question("jargon", "Too much jargon?", "Lots of jargon.", severity="error")
+    config.add_custom_question("emoji", "Too many emoji?", "Lots of emoji.", severity="warning")
+    monkeypatch.setattr(watch_loop.stats, "STATS_PATH", tmp_path / "stats.json")
+    monkeypatch.setattr(watch_loop.notifier, "notify_checking", lambda *_args: None)
+    monkeypatch.setattr(watch_loop.notifier, "notify_results", lambda *_args: None)
+
+    def fake_check(_key, _text, questions, provider, context=None):
+        scores = {question_key: 0.1 for question_key in questions}
+        scores.update(jargon=0.9, emoji=0.8)
+        return scores
+
+    monkeypatch.setattr(watch_loop.jev_client, "check_draft", fake_check)
+
+    watch_loop.handle_draft("Please decide whether we should proceed.", app="Discord")
+
+    per_question = watch_loop.stats.summary(app="Discord")["per_question"]
+    assert per_question["jargon"] == {"good": 0, "warning": 0, "error": 1}
+    assert per_question["emoji"] == {"good": 0, "warning": 1, "error": 0}
+    assert per_question["curt"] == {"good": 1, "warning": 0, "error": 0}
+
+
+def test_context_is_sent_and_enables_context_questions(monkeypatch):
+    from core.context import ConversationContext
+
+    sent = []
+    monkeypatch.setattr(watch_loop.notifier, "notify_checking", lambda *_args: None)
+    monkeypatch.setattr(watch_loop.notifier, "notify_results", lambda *_args: None)
+    monkeypatch.setattr(watch_loop.stats, "record_check", lambda *_args, **_kwargs: None)
+
+    def fake_check(_key, _text, questions, provider, context=None):
+        sent.append((set(questions), context))
+        return {question_key: 0.1 for question_key in questions}
+
+    monkeypatch.setattr(watch_loop.jev_client, "check_draft", fake_check)
+
+    conversation = ConversationContext(place="general", previous_messages=["sam: ready?"])
+    watch_loop.handle_draft("Please decide whether we should proceed.", context=conversation)
+    watch_loop.handle_draft("Please decide whether we should proceed.")
+
+    with_context, without_context = sent
+    assert "unanswered" in with_context[0]
+    assert with_context[1] == {"place": "general", "previous_messages": ["sam: ready?"]}
+    assert "unanswered" not in without_context[0]
+    assert without_context[1] == {}
+
+
+def test_context_is_extracted_only_when_enabled(monkeypatch):
+    config.add_app(label="Discord", process_name="Discord.exe")
+    calls = []
+    extracted = []
+    monkeypatch.setattr(watch_loop, "handle_draft", lambda *a, **k: calls.append(k))
+    monkeypatch.setattr(
+        watch_loop.context, "extract", lambda backend, control: extracted.append(control)
+    )
+
+    backend = MockBackend()
+    backend.focused_control = MockControl(
+        "Discord.exe", text="This is a long enough draft to be evaluated"
+    )
+    _run_for(backend, 1.0)
+    assert len(extracted) == 1
+    assert calls[0]["context"] is None  # the stub returned nothing
+
+    config.set_send_context(False)
+    extracted.clear()
+    backend.focused_control = MockControl(
+        "Discord.exe", text="Another long enough draft to be evaluated"
+    )
+    _run_for(backend, 1.0)
+    assert extracted == []
+
+
+def test_context_note_describes_what_the_checks_saw():
+    from core.context import ConversationContext
+
+    assert watch_loop.context_note(None, enabled=False) == "Conversation context is off"
+    assert watch_loop.context_note(None) == "No conversation context found"
+    assert watch_loop.context_note(
+        ConversationContext(place="general (channel)", previous_messages=["a", "b"])
+    ) == "💬 Used context: general (channel) · 2 previous messages"
+    assert watch_loop.context_note(
+        ConversationContext(window_title="Doc - Google Docs", previous_messages=["a"])
+    ) == "💬 Used context: Doc - Google Docs · 1 previous message"
+    long_title = ConversationContext(window_title="x" * 60)
+    assert watch_loop.context_note(long_title) == (
+        "💬 Used context: " + "x" * 39 + "… · no previous messages found"
+    )

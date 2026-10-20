@@ -11,7 +11,7 @@ import re
 import sys
 import threading
 import tkinter as tk
-from tkinter import messagebox, simpledialog
+from tkinter import messagebox, simpledialog, ttk
 
 from core import api_key as api_key_store
 from core import config
@@ -281,18 +281,270 @@ def _open_configure_checks_dialog(parent):
     tk.Label(dialog, textvariable=status_var, fg="#81c995").pack(anchor="w", padx=12, pady=(0, 8))
 
 
+_ALL_APPS = "All apps"
+_STATS_VIEWS = (("check", "By check"), ("app", "By app"), ("day", "By day"))
+
+
+def _stats_label_for_key(key):
+    # A recorded check may since have been deleted (custom questions), so
+    # fall back to its storage key rather than failing the lookup.
+    defs = jev_client.get_question_defs()
+    return jev_client.label_for(key, defs[key]) if key in defs else key
+
+
+def _feedback_totals(per_question):
+    """Warnings and errors summed over every check."""
+    return {
+        outcome: sum(counts[outcome] for counts in per_question.values())
+        for outcome in ("warning", "error")
+    }
+
+
+def _open_stats_dialog(parent):
+    """Local usage stats screen. Filter by period (today, the last 7/30
+    days, all time, or any single recorded day) and by app, then pick a
+    view: per check (good vs. warning vs. error), per app, or per day.
+    Double-clicking an app or a day narrows the filters to it and drills
+    down to the per-check view."""
+    dialog = tk.Toplevel(parent)
+    icon.set_window_icon(dialog)
+    dialog.title("Usage stats")
+    dialog.geometry("560x520")
+    dialog.minsize(460, 380)
+    dialog.transient(parent)
+
+    tk.Label(
+        dialog,
+        text=(
+            "Stored locally only. Checks and apps with the most warnings/errors "
+            "are listed first. Double-click an app or a day to see its checks."
+        ),
+        fg="#5f6368",
+        wraplength=520,
+        justify="left",
+    ).pack(anchor="w", padx=12, pady=(12, 6))
+
+    def period_choices():
+        choices = [
+            ("Today", stats.last_n_days(1)),
+            ("Last 7 days", stats.last_n_days(7)),
+            ("Last 30 days", stats.last_n_days(30)),
+            ("All time", None),
+        ]
+        choices += [(day, [day]) for day in stats.recorded_days()]
+        return choices
+
+    period_var = tk.StringVar(value="Last 7 days")
+    app_var = tk.StringVar(value=_ALL_APPS)
+    view_var = tk.StringVar(value="check")
+
+    filters = tk.Frame(dialog)
+    filters.pack(fill="x", padx=12)
+    filters.columnconfigure(1, weight=1)
+
+    def add_menu(row, caption, variable):
+        tk.Label(filters, text=caption).grid(row=row, column=0, sticky="w", pady=2)
+        button = tk.Menubutton(filters, relief="raised", anchor="w", textvariable=variable)
+        button.grid(row=row, column=1, sticky="ew", padx=(4, 0), pady=2)
+        menu = tk.Menu(button, tearoff=False)
+        button["menu"] = menu
+        return menu
+
+    period_menu = add_menu(0, "Period:", period_var)
+    app_menu = add_menu(1, "App:", app_var)
+
+    view_row = tk.Frame(dialog)
+    view_row.pack(fill="x", padx=12, pady=(6, 0))
+    tk.Label(view_row, text="View:").pack(side="left")
+    for value, text in _STATS_VIEWS:
+        tk.Radiobutton(view_row, text=text, value=value, variable=view_var).pack(
+            side="left", padx=(4, 4)
+        )
+
+    totals_var = tk.StringVar()
+    tk.Label(dialog, textvariable=totals_var, justify="left", wraplength=520).pack(
+        anchor="w", padx=12, pady=(8, 4)
+    )
+
+    table_frame = tk.Frame(dialog)
+    table_frame.pack(fill="both", expand=True, padx=12)
+    table = ttk.Treeview(table_frame, show="headings", selectmode="browse", height=10)
+    table.pack(side="left", fill="both", expand=True)
+    table_scroll = tk.Scrollbar(table_frame, command=table.yview)
+    table_scroll.pack(side="right", fill="y")
+    table.config(yscrollcommand=table_scroll.set)
+
+    def current_filters():
+        choices = dict(period_choices())
+        days = choices.get(period_var.get(), choices["Last 7 days"])
+        app = None if app_var.get() == _ALL_APPS else app_var.get()
+        return days, app
+
+    def set_columns(columns):
+        """columns: list of (id, heading, width, anchor)."""
+        table.delete(*table.get_children())
+        table["columns"] = [column_id for column_id, *_rest in columns]
+        for column_id, heading, width, anchor in columns:
+            table.heading(column_id, text=heading, anchor=anchor)
+            table.column(column_id, width=width, anchor=anchor, stretch=column_id == "name")
+
+    def render_by_check(s):
+        set_columns([
+            ("name", "Check", 200, "w"),
+            ("good", "Good", 70, "e"),
+            ("warning", "Warning", 70, "e"),
+            ("error", "Error", 70, "e"),
+        ])
+        rows = sorted(
+            s["per_question"].items(),
+            key=lambda kv: (-(kv[1]["warning"] + kv[1]["error"]), _stats_label_for_key(kv[0])),
+        )
+        for key, counts in rows:
+            table.insert(
+                "", "end",
+                values=(_stats_label_for_key(key), counts["good"], counts["warning"], counts["error"]),
+            )
+
+    def render_grouped(by, days, app):
+        set_columns([
+            ("name", "App" if by == "app" else "Date", 150, "w"),
+            ("checks", "Checks", 60, "e"),
+            ("clean", "Clean", 60, "e"),
+            ("warning", "Warnings", 70, "e"),
+            ("error", "Errors", 60, "e"),
+            ("top", "Most feedback", 140, "w"),
+        ])
+        groups = stats.grouped_summaries(by, days=days, app=app)
+        if by == "app":
+            order = sorted(groups, key=lambda g: (-groups[g]["total_flagged"], g.lower()))
+        else:
+            order = sorted(groups, reverse=True)
+        for group in order:
+            s = groups[group]
+            sums = _feedback_totals(s["per_question"])
+            top = stats.top_feedback_check(s["per_question"])
+            table.insert(
+                "", "end", iid=group,
+                values=(
+                    group, s["total_checks"], s["total_checks"] - s["total_flagged"],
+                    sums["warning"], sums["error"],
+                    _stats_label_for_key(top) if top else "-",
+                ),
+            )
+
+    def render(*_args):
+        days, app = current_filters()
+        s = stats.summary(days, app=app)
+        if s["total_checks"]:
+            totals_var.set(
+                f"{s['total_checks']} checks, {s['total_flagged']} with feedback "
+                f"({s['flagged_pct']:.0f}%)."
+            )
+        else:
+            totals_var.set("No checks recorded for these filters.")
+        legacy = s.get("legacy")
+        if legacy:
+            totals_var.set(
+                totals_var.get()
+                + f"\nPlus {legacy['total_checks']} earlier checks "
+                f"({legacy['total_flagged']} flagged) from before daily/per-app tracking."
+            )
+
+        if view_var.get() == "check":
+            render_by_check(s)
+        else:
+            render_grouped(view_var.get(), days, app)
+
+    def refresh_menus():
+        period_menu.delete(0, "end")
+        for index, (name, _days) in enumerate(period_choices()):
+            if index == 4:
+                period_menu.add_separator()
+            period_menu.add_command(label=name, command=lambda value=name: period_var.set(value))
+        apps = stats.recorded_apps()
+        app_menu.delete(0, "end")
+        app_menu.add_command(label=_ALL_APPS, command=lambda: app_var.set(_ALL_APPS))
+        if apps:
+            app_menu.add_separator()
+        for name in apps:
+            app_menu.add_command(label=name, command=lambda value=name: app_var.set(value))
+        if app_var.get() != _ALL_APPS and app_var.get() not in apps:
+            app_var.set(_ALL_APPS)
+        if period_var.get() not in dict(period_choices()):
+            period_var.set("Last 7 days")
+
+    def on_drill_down(_event=None):
+        group = table.focus()
+        if not group or view_var.get() == "check":
+            return
+        if view_var.get() == "app":
+            app_var.set(group)
+        else:
+            period_var.set(group)
+        view_var.set("check")
+
+    table.bind("<Double-1>", on_drill_down)
+    table.bind("<Return>", on_drill_down)
+    for variable in (period_var, app_var, view_var):
+        variable.trace_add("write", render)
+
+    def do_reset_stats():
+        if messagebox.askyesno("Reset usage stats", "Clear all recorded usage stats?", parent=dialog):
+            stats.reset()
+            refresh_menus()
+            render()
+
+    button_row = tk.Frame(dialog)
+    button_row.pack(pady=12)
+    tk.Button(button_row, text="Reset stats", command=do_reset_stats).pack(side="left", padx=4)
+    tk.Button(button_row, text="Close", command=dialog.destroy).pack(side="left", padx=4)
+
+    refresh_menus()
+    render()
+    return dialog
+
+
+def _scrollable_body(window):
+    """A frame filling `window`'s width inside a vertically scrolling
+    canvas. The mouse wheel scrolls it from anywhere in the window except
+    over widgets that scroll themselves (the app list)."""
+    canvas = tk.Canvas(window, highlightthickness=0)
+    scrollbar = tk.Scrollbar(window, orient="vertical", command=canvas.yview)
+    body = tk.Frame(canvas)
+    body_id = canvas.create_window((0, 0), window=body, anchor="nw")
+    canvas.configure(yscrollcommand=scrollbar.set)
+    scrollbar.pack(side="right", fill="y")
+    canvas.pack(side="left", fill="both", expand=True)
+    body.bind("<Configure>", lambda _e: canvas.configure(scrollregion=canvas.bbox("all")))
+    canvas.bind("<Configure>", lambda e: canvas.itemconfigure(body_id, width=e.width))
+
+    def on_wheel(event):
+        if isinstance(event.widget, (tk.Listbox, tk.Text)):
+            return
+        if sys.platform == "darwin":
+            step = -event.delta
+        else:
+            step = -int(event.delta / 120) or (-1 if event.delta > 0 else 1)
+        canvas.yview_scroll(step, "units")
+
+    # Bound on the toplevel, so it fires for every widget inside it.
+    window.bind("<MouseWheel>", on_wheel)
+    return body
+
+
 def open_settings_window(on_change=None):
     """Blocking until the window is closed. `on_change`, if given, is
     called (no args) whenever the watched-app list changes."""
-    root = tk.Tk()
-    icon.set_window_icon(root)
-    root.title("Jev Send Guard — Settings")
-    root.geometry("380x940")
-    root.minsize(380, 420)
-    # Resizable, not fixed: this window has grown to six stacked sections
-    # (watched apps, checks, API key, usage) and a fixed height risks
-    # clipping the bottom on a smaller display or larger system font scale.
-    root.resizable(True, True)
+    window = tk.Tk()
+    icon.set_window_icon(window)
+    window.title("Jev Send Guard — Settings")
+    window.minsize(400, 420)
+    window.resizable(True, True)
+    # The sections no longer fit on a 1080p screen (watched apps, checks,
+    # two delays, model, context, two API keys, usage), so they scroll.
+    # `root` is the scrolling content frame every section packs into;
+    # window-level calls (title, dialogs' parent, mainloop) use `window`.
+    root = _scrollable_body(window)
 
     tk.Label(root, text="Watched apps", font=("Segoe UI", 10, "bold")).pack(
         anchor="w", padx=12, pady=(12, 4)
@@ -462,7 +714,7 @@ def open_settings_window(on_change=None):
             if on_change:
                 on_change()
 
-        _open_edit_app_dialog(root, app, on_saved)
+        _open_edit_app_dialog(window, app, on_saved)
 
     button_row = tk.Frame(root)
     button_row.pack(fill="x", padx=12, pady=6)
@@ -473,94 +725,107 @@ def open_settings_window(on_change=None):
     tk.Label(root, textvariable=add_status_var, fg="#5f6368").pack(anchor="w", padx=12)
 
     tk.Button(
-        root, text="Configure checks...", command=lambda: _open_configure_checks_dialog(root)
+        root, text="Configure checks...", command=lambda: _open_configure_checks_dialog(window)
     ).pack(anchor="w", padx=12, pady=(4, 0))
 
-    tk.Label(root, text="Delay before checking", font=("Segoe UI", 10, "bold")).pack(
-        anchor="w", padx=12, pady=(16, 4)
+    def add_seconds_setting(title, get_value, set_value, reset_value, default, help_text):
+        """A "N seconds  [Save] [Reset to default]" row with inline
+        validation errors. `set_value` validates and raises ValueError."""
+        tk.Label(root, text=title, font=("Segoe UI", 10, "bold")).pack(
+            anchor="w", padx=12, pady=(16, 4)
+        )
+        row = tk.Frame(root)
+        row.pack(fill="x", padx=12)
+
+        def allow_keystroke(proposed):
+            # Block obviously non-numeric input as it's typed; range and
+            # format are fully checked on Save by `set_value`.
+            return re.fullmatch(r"[0-9]*[.,]?[0-9]*", proposed) is not None and len(proposed) <= 6
+
+        entry = tk.Entry(
+            row,
+            width=8,
+            validate="key",
+            validatecommand=(root.register(allow_keystroke), "%P"),
+        )
+        entry.pack(side="left")
+        tk.Label(row, text="seconds").pack(side="left", padx=(4, 0))
+
+        default_fg = entry.cget("foreground")
+        status_var = tk.StringVar()
+        status_label = tk.Label(
+            root, textvariable=status_var, fg="#81c995", wraplength=340, justify="left"
+        )
+
+        def show(seconds):
+            entry.delete(0, tk.END)
+            entry.insert(0, f"{seconds:g}")
+
+        def flash(message, error=False):
+            status_label.config(fg="#d93025" if error else "#81c995")
+            entry.config(foreground="#d93025" if error else default_fg)
+            status_var.set(message)
+            if not error:
+                root.after(2000, lambda: status_var.set(""))
+
+        def do_save(_event=None):
+            try:
+                seconds = set_value(entry.get())
+            except ValueError as exc:
+                flash(str(exc), error=True)
+                return
+            show(seconds)
+            flash("Saved.")
+            if on_change:
+                on_change()
+
+        def do_reset():
+            reset_value()
+            show(default)
+            flash("Reset to default.")
+            if on_change:
+                on_change()
+
+        def clear_error(event=None):
+            # The Return that just triggered Save also fires a KeyRelease;
+            # don't let it wipe the error that Save just displayed.
+            if event is not None and event.keysym in ("Return", "KP_Enter"):
+                return
+            if entry.cget("foreground") != default_fg:
+                entry.config(foreground=default_fg)
+                status_var.set("")
+
+        show(get_value())
+        entry.bind("<Return>", do_save)
+        entry.bind("<KeyRelease>", clear_error, add="+")
+        tk.Button(row, text="Save", command=do_save).pack(side="left", padx=(8, 0))
+        tk.Button(row, text="Reset to default", command=do_reset).pack(side="left", padx=(8, 0))
+        tk.Label(
+            root, text=help_text, fg="#5f6368", wraplength=340, justify="left",
+        ).pack(anchor="w", padx=12, pady=(4, 0))
+        status_label.pack(anchor="w", padx=12)
+
+    add_seconds_setting(
+        "Delay before checking",
+        config.get_idle_seconds,
+        config.set_idle_seconds,
+        config.reset_idle_seconds,
+        config.DEFAULT_IDLE_SECONDS,
+        "How long you must pause typing before the draft is checked "
+        f"({config.MIN_IDLE_SECONDS:g}–{config.MAX_IDLE_SECONDS:g}s, "
+        f"default {config.DEFAULT_IDLE_SECONDS:g}s).",
     )
-
-    delay_frame = tk.Frame(root)
-    delay_frame.pack(fill="x", padx=12)
-
-    def allow_delay_keystroke(proposed):
-        # Block obviously non-numeric input as it's typed; range and format
-        # are fully checked on Save by config.validate_idle_seconds().
-        return re.fullmatch(r"[0-9]*[.,]?[0-9]*", proposed) is not None and len(proposed) <= 6
-
-    delay_entry = tk.Entry(
-        delay_frame,
-        width=8,
-        validate="key",
-        validatecommand=(root.register(allow_delay_keystroke), "%P"),
+    add_seconds_setting(
+        "Keep results open for",
+        config.get_popup_seconds,
+        config.set_popup_seconds,
+        config.reset_popup_seconds,
+        config.DEFAULT_POPUP_SECONDS,
+        "How long the results popup stays up "
+        f"({config.MIN_POPUP_SECONDS:g}–{config.MAX_POPUP_SECONDS:g}s, "
+        f"default {config.DEFAULT_POPUP_SECONDS:g}s). It still closes as soon "
+        "as you start typing again.",
     )
-    delay_entry.pack(side="left")
-    tk.Label(delay_frame, text="seconds").pack(side="left", padx=(4, 0))
-
-    delay_default_fg = delay_entry.cget("foreground")
-    delay_status_var = tk.StringVar()
-    delay_status_label = tk.Label(
-        root, textvariable=delay_status_var, fg="#81c995", wraplength=340, justify="left"
-    )
-
-    def show_delay(seconds):
-        delay_entry.delete(0, tk.END)
-        delay_entry.insert(0, f"{seconds:g}")
-
-    def flash_delay(message, error=False):
-        delay_status_label.config(fg="#d93025" if error else "#81c995")
-        delay_entry.config(foreground="#d93025" if error else delay_default_fg)
-        delay_status_var.set(message)
-        if not error:
-            root.after(2000, lambda: delay_status_var.set(""))
-
-    def do_save_delay(_event=None):
-        try:
-            seconds = config.set_idle_seconds(delay_entry.get())
-        except ValueError as exc:
-            flash_delay(str(exc), error=True)
-            return
-        show_delay(seconds)
-        flash_delay("Saved.")
-        if on_change:
-            on_change()
-
-    def do_reset_delay():
-        config.reset_idle_seconds()
-        show_delay(config.DEFAULT_IDLE_SECONDS)
-        flash_delay("Reset to default.")
-        if on_change:
-            on_change()
-
-    def clear_delay_error(event=None):
-        # The Return that just triggered Save also fires a KeyRelease; don't
-        # let it wipe the error that Save just displayed.
-        if event is not None and event.keysym in ("Return", "KP_Enter"):
-            return
-        if delay_entry.cget("foreground") != delay_default_fg:
-            delay_entry.config(foreground=delay_default_fg)
-            delay_status_var.set("")
-
-    show_delay(config.get_idle_seconds())
-    delay_entry.bind("<Return>", do_save_delay)
-    delay_entry.bind("<KeyRelease>", clear_delay_error, add="+")
-    tk.Button(delay_frame, text="Save", command=do_save_delay).pack(side="left", padx=(8, 0))
-    tk.Button(delay_frame, text="Reset to default", command=do_reset_delay).pack(
-        side="left", padx=(8, 0)
-    )
-
-    tk.Label(
-        root,
-        text=(
-            "How long you must pause typing before the draft is checked "
-            f"({config.MIN_IDLE_SECONDS:g}–{config.MAX_IDLE_SECONDS:g}s, "
-            f"default {config.DEFAULT_IDLE_SECONDS:g}s)."
-        ),
-        fg="#5f6368",
-        wraplength=340,
-        justify="left",
-    ).pack(anchor="w", padx=12, pady=(4, 0))
-    delay_status_label.pack(anchor="w", padx=12)
 
     tk.Label(root, text="Model", font=("Segoe UI", 10, "bold")).pack(
         anchor="w", padx=12, pady=(16, 4)
@@ -594,6 +859,25 @@ def open_settings_window(on_change=None):
         justify="left",
     ).pack(anchor="w", padx=12, pady=(4, 0))
     tk.Label(root, textvariable=provider_status_var, fg="#81c995").pack(anchor="w", padx=12)
+
+    send_context_var = tk.BooleanVar(value=config.get_send_context())
+    tk.Checkbutton(
+        root,
+        text="Send conversation context",
+        variable=send_context_var,
+        command=lambda: config.set_send_context(send_context_var.get()),
+    ).pack(anchor="w", padx=12, pady=(4, 0))
+    tk.Label(
+        root,
+        text=(
+            "Also sends the channel/thread name and the last few messages above "
+            "the text box, so checks can judge the reply in context (and "
+            "\"Answers the thread\" can run)."
+        ),
+        fg="#5f6368",
+        wraplength=340,
+        justify="left",
+    ).pack(anchor="w", padx=12)
 
     def add_key_section(title, provider):
         tk.Label(root, text=title, font=("Segoe UI", 10, "bold")).pack(
@@ -634,18 +918,13 @@ def open_settings_window(on_change=None):
     usage_var = tk.StringVar()
 
     def refresh_usage():
-        s = stats.summary()
+        s = stats.summary(stats.last_n_days(1))
         if s["total_checks"] == 0:
-            usage_var.set("No checks recorded yet.")
+            usage_var.set("No checks recorded today.")
             return
-        per_question = ", ".join(
-            f"{key}: {count}"
-            for key, count in sorted(s["per_question"].items(), key=lambda kv: -kv[1])
-        )
         usage_var.set(
-            f"{s['total_checks']} checks, {s['total_flagged']} flagged "
-            f"({s['flagged_pct']:.0f}%).\n"
-            f"{per_question or 'Nothing flagged yet.'}"
+            f"Today: {s['total_checks']} checks, {s['total_flagged']} with feedback "
+            f"({s['flagged_pct']:.0f}%)."
         )
 
     refresh_usage()
@@ -653,15 +932,19 @@ def open_settings_window(on_change=None):
         anchor="w", padx=12
     )
 
-    def do_reset_stats():
-        if messagebox.askyesno("Reset usage stats", "Clear all recorded usage stats?", parent=root):
-            stats.reset()
-            refresh_usage()
+    def do_view_stats():
+        # The dialog can reset stats; refresh the summary once it closes.
+        root.wait_window(_open_stats_dialog(window))
+        refresh_usage()
 
-    tk.Button(root, text="Reset stats", command=do_reset_stats).pack(
+    tk.Button(root, text="View stats...", command=do_view_stats).pack(
         anchor="w", padx=12, pady=(4, 0)
     )
 
-    tk.Button(root, text="Close", command=root.destroy).pack(pady=16)
+    tk.Button(root, text="Close", command=window.destroy).pack(pady=16)
 
-    root.mainloop()
+    # Open tall enough for everything when the screen allows it.
+    window.update_idletasks()
+    height = min(root.winfo_reqheight(), window.winfo_screenheight() - 120)
+    window.geometry(f"400x{height}")
+    window.mainloop()

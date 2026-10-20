@@ -13,7 +13,9 @@ def isolated_config(tmp_path, monkeypatch):
 
 def test_get_question_defs_defaults():
     defs = jev_client.get_question_defs()
-    assert set(defs) == {"curt", "missing_ask", "unprofessional", "impolite", "sarcasm"}
+    assert set(defs) == {
+        "curt", "missing_ask", "unprofessional", "impolite", "sarcasm", "unanswered",
+    }
     assert defs["sarcasm"]["severity"] == "error"
     assert defs["curt"]["severity"] == "error"
     assert defs["unprofessional"]["severity"] == "warning"
@@ -51,7 +53,10 @@ def test_custom_question_is_merged_into_defs():
         severity="warning",
     )
     defs = jev_client.get_question_defs()
-    assert set(defs) == {"curt", "missing_ask", "unprofessional", "impolite", "sarcasm", "overpromising"}
+    assert set(defs) == {
+        "curt", "missing_ask", "unprofessional", "impolite", "sarcasm", "unanswered",
+        "overpromising",
+    }
     assert defs["overpromising"]["message"] == "This might be overpromising."
     assert jev_client.message_for("overpromising") == "This might be overpromising."
     assert jev_client.severity_of("overpromising") == "warning"
@@ -236,3 +241,33 @@ def test_mercury_provider_uses_inception_endpoint_and_model(monkeypatch):
         "model": "mercury-decide",
     }
     assert result == {"curt": 0.97}
+
+
+def test_questions_requiring_context_are_skipped_without_it():
+    assert "unanswered" not in jev_client.get_active_questions()
+    assert "unanswered" not in jev_client.get_active_questions(available_context={"place"})
+    assert "unanswered" in jev_client.get_active_questions(
+        available_context={"place", "previous_messages"}
+    )
+
+
+def test_context_is_sent_in_the_state(monkeypatch):
+    captured = {}
+
+    class FakeResponse:
+        status_code = 200
+
+        def json(self):
+            return {"answers": {}}
+
+    def fake_post(url, headers, json, timeout):
+        captured["state"] = json["state"]
+        return FakeResponse()
+
+    monkeypatch.setattr(jev_client._get_client(), "post", fake_post)
+    context = {"place": "general (channel)", "previous_messages": ["sam: ready?"]}
+    jev_client.check_draft("fake-key", "some text", context=context)
+    assert captured["state"] == {"draft": "some text", "context": context}
+
+    jev_client.check_draft("fake-key", "some text")
+    assert captured["state"] == {"draft": "some text"}
