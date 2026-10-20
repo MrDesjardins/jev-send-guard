@@ -3,16 +3,23 @@
     uv run manage.py add
     uv run manage.py list
     uv run manage.py remove "Discord messages"
+    uv run manage.py inspect-context
 
 `add` is interactive: it asks you to switch to the target app and type a
 couple of words there, detects which process that was, then asks for a
 short label. Nothing is watched until you explicitly add it here — see
 PLAN.md's non-goals.
+
+`inspect-context` waits a few seconds so you can click into a text box,
+then shows what conversation context core/context.py finds there and
+saves a structure dump (local only) for tuning the heuristic on that app.
 """
 
 import argparse
 import getpass
 import sys
+import time
+from datetime import datetime
 
 from core import api_key as api_key_store
 from core import config
@@ -93,6 +100,53 @@ def cmd_set_key(args):
     return 0
 
 
+def cmd_inspect_context(args):
+    from core import context
+
+    if sys.platform == "win32":
+        from platform_backends import windows as backend
+    elif sys.platform == "darwin":
+        from platform_backends import macos as backend
+    else:
+        print(f"Unsupported platform: {sys.platform}")
+        return 1
+
+    for remaining in range(args.delay, 0, -1):
+        print(f"Click into the text box you want to inspect... {remaining}", flush=True)
+        time.sleep(1)
+    control = backend.get_focused_control()
+    if control is None:
+        print("No focused control found.")
+        return 1
+
+    process = backend.get_process_name(backend.get_process_id(control))
+    title = backend.get_window_title(control)
+    ctx = context.extract(backend, control)
+    report = [
+        f"process: {process}",
+        f"window title: {title}",
+        f"writable text box: {backend.is_writable_text_control(control)}",
+    ]
+    if ctx is None:
+        report.append("context: none found")
+    else:
+        report.append(
+            f"context: source={ctx.source} place={ctx.place!r} "
+            f"({ctx.nodes_visited} nodes, {ctx.elapsed_ms} ms)"
+        )
+        report += [f"  message: {message}" for message in ctx.previous_messages]
+    print("\n".join(report))
+
+    dump_dir = config.CONFIG_DIR / "context-dumps"
+    dump_dir.mkdir(parents=True, exist_ok=True)
+    safe_process = "".join(ch for ch in (process or "unknown") if ch.isalnum() or ch in "._-")
+    path = dump_dir / f"{datetime.now():%Y%m%d-%H%M%S}-{safe_process}.txt"
+    lines = report + ["", "--- tree ---"] + context.describe_tree(backend, control)
+    path.write_text("\n".join(lines), encoding="utf-8")
+    print(f"\nFull dump saved to {path}")
+    return 0
+
+
 def cmd_remove(args):
     removed = config.remove_app(args.identifier)
     if removed:
@@ -114,6 +168,15 @@ def main():
         help="jev = TypeSafe key (default), mercury = Inception key",
     )
     set_key_parser.set_defaults(func=cmd_set_key)
+
+    inspect_parser = subparsers.add_parser(
+        "inspect-context",
+        help="Show the conversation context found in a text box and save a tree dump",
+    )
+    inspect_parser.add_argument(
+        "--delay", type=int, default=5, help="Seconds to switch to the text box (default 5)"
+    )
+    inspect_parser.set_defaults(func=cmd_inspect_context)
 
     remove_parser = subparsers.add_parser("remove", help="Stop watching an app")
     remove_parser.add_argument("identifier", help="Label or process name to remove")

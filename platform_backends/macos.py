@@ -130,6 +130,58 @@ def get_focused_control():
         return None
 
 
+# Tree access for core/context.py's conversation-context heuristic.
+# Untested on a live Mac so far; mirrors windows.py's role mapping.
+_CONTEXT_ROLES = {
+    "AXList": "list",
+    "AXTable": "list",
+    "AXOutline": "list",
+    "AXRow": "listitem",
+    "AXStaticText": "text",
+    "AXLink": "link",
+    "AXTextArea": "edit",
+    "AXTextField": "edit",
+    "AXButton": "button",
+    "AXMenuItem": "button",
+}
+
+
+def context_parent(node):
+    return _get_attr(node, "AXParent")
+
+
+def context_children(node):
+    return _get_attr(node, kAXChildrenAttribute) or []
+
+
+def context_info(node):
+    role = _CONTEXT_ROLES.get(_get_attr(node, kAXRoleAttribute), "other")
+    if role in ("text", "link"):
+        name = _get_attr(node, kAXValueAttribute) or _get_attr(node, kAXTitleAttribute)
+    else:
+        name = _get_attr(node, kAXTitleAttribute) or _get_attr(node, kAXDescriptionAttribute)
+    return role, name if isinstance(name, str) else "", get_bounding_rect(node)
+
+
+def context_raw_role(node):
+    """The unmapped AX role/subrole, for manage.py inspect-context dumps:
+    what's needed to extend _CONTEXT_ROLES for an app."""
+    role = _get_attr(node, kAXRoleAttribute) or "?"
+    subrole = _get_attr(node, kAXSubroleAttribute)
+    return f"{role}:{subrole}" if subrole else role
+
+
+def context_key(node):
+    # AXUIElement refs compare with CFEqual, so the element is its own key.
+    return node
+
+
+def get_window_title(control):
+    window = _get_attr(control, "AXWindow")
+    title = _get_attr(window, kAXTitleAttribute) if window is not None else None
+    return title if isinstance(title, str) else None
+
+
 def get_focused_application():
     """Return the active app's AX element, even if it exposes no text field."""
     try:

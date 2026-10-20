@@ -42,6 +42,8 @@ import threading
 from pathlib import Path
 import tkinter as tk
 
+from core import config
+
 log = logging.getLogger("jev-send-guard")
 
 # The progress/result card has one labelled row per check, plus one score
@@ -223,12 +225,15 @@ def _build_checking(labels, provider_names):
     return build
 
 
-def _build_results(rows, columns):
+def _build_results(rows, columns, context_note=None):
     """Render every check in a stable layout after a progress panel.
 
     Each row is ``(label, concern, message, severity, scores)``, ``scores``
     holding one probability (or None) per provider; ``columns`` is one
     ``(provider_name, elapsed_ms or None if it failed)`` per provider.
+    ``context_note``, if given, is a gray line above the footer saying
+    whether conversation context was used (see watch_loop.context_note).
+
     Keeping the same title-plus-one-row-per-question layout as
     `_build_checking` makes the transition legible rather than a sequence of
     popups that move or grow.
@@ -275,6 +280,11 @@ def _build_results(rows, columns):
                     font=("Segoe UI", 9, "bold"),
                 ).grid(row=index, column=2 + col, sticky="ne", padx=(10, 0))
 
+        if context_note:
+            tk.Label(
+                content, text=context_note, fg=CHECKING_GRAY, bg=BG, font=("Segoe UI", 8),
+                anchor="w", justify="left", wraplength=WIDTH - ACCENT_WIDTH - 28,
+            ).pack(anchor="w", fill="x", pady=(4, 0))
         tk.Label(
             content, text="% = how likely the issue is present", fg=CHECKING_GRAY, bg=BG,
             font=("Segoe UI", 8),
@@ -489,6 +499,12 @@ def dismiss():
         _popup_process = None
 
 
+def _results_dismiss_ms():
+    """The user's "Keep results open for" setting, in ms. Read on each
+    popup so a change in Settings applies to the next one."""
+    return int(config.get_popup_seconds() * 1000)
+
+
 def notify(items, anchor_rect=None):
     """Fire-and-forget: enqueues the concerns popup for the UI thread to
     show, replacing whatever's currently up. `items` is a list of
@@ -496,9 +512,9 @@ def notify(items, anchor_rect=None):
     `anchor_rect` is the focused control's (left, top, right, bottom) in
     screen coordinates."""
     if sys.platform == "darwin":
-        _show_macos_panel("concerns", items, anchor_rect, 8000)
+        _show_macos_panel("concerns", items, anchor_rect, _results_dismiss_ms())
     else:
-        _enqueue(_build_concerns(items), anchor_rect, 8000)
+        _enqueue(_build_concerns(items), anchor_rect, _results_dismiss_ms())
 
 
 def notify_checking(labels, anchor_rect=None, provider_names=("Jev",)):
@@ -512,10 +528,11 @@ def notify_checking(labels, anchor_rect=None, provider_names=("Jev",)):
         _enqueue(_build_checking(labels, provider_names), anchor_rect, 10000)
 
 
-def notify_results(rows, columns, anchor_rect=None):
+def notify_results(rows, columns, anchor_rect=None, context_note=None):
     """Replace the progress panel with the complete, stable batch result.
 
-    See `_build_results` for the shape of ``rows`` and ``columns``."""
+    See `_build_results` for the shape of ``rows``, ``columns`` and
+    ``context_note``."""
     if sys.platform == "darwin":
         # JSON turns tuples into lists, which notification_app.py handles
         # identically.  Use dictionaries here so the payload stays explicit.
@@ -531,10 +548,11 @@ def notify_results(rows, columns, anchor_rect=None):
                 }
                 for label, concern, message, severity, scores in rows
             ],
+            "context_note": context_note,
         }
-        _show_macos_panel("results", payload, anchor_rect, 8000)
+        _show_macos_panel("results", payload, anchor_rect, _results_dismiss_ms())
     else:
-        _enqueue(_build_results(rows, columns), anchor_rect, 8000)
+        _enqueue(_build_results(rows, columns, context_note), anchor_rect, _results_dismiss_ms())
 
 
 def notify_unavailable(labels, anchor_rect=None, provider_names=("Jev",)):

@@ -202,6 +202,53 @@ def get_focused_control():
         return None
 
 
+# Tree access for core/context.py's conversation-context heuristic. UIA
+# control wrappers don't compare equal across lookups, so identity is the
+# RuntimeId instead.
+_CONTEXT_ROLES = {
+    "ListControl": "list",
+    "DataGridControl": "list",
+    "ListItemControl": "listitem",
+    "DataItemControl": "listitem",
+    "TextControl": "text",
+    "HyperlinkControl": "link",
+    "EditControl": "edit",
+    "DocumentControl": "edit",
+    "ButtonControl": "button",
+    "MenuItemControl": "button",
+    "SplitButtonControl": "button",
+    "TabItemControl": "button",
+}
+
+
+def context_parent(node):
+    return node.GetParentControl()
+
+
+def context_children(node):
+    return node.GetChildren()
+
+
+def context_info(node):
+    return _CONTEXT_ROLES.get(node.ControlTypeName, "other"), _safe_name(node), get_bounding_rect(node)
+
+
+def context_raw_role(node):
+    """The unmapped control type, for manage.py inspect-context dumps."""
+    return node.ControlTypeName
+
+
+def context_key(node):
+    return tuple(safe_runtime_id(node) or ())
+
+
+def get_window_title(control):
+    try:
+        return control.GetTopLevelControl().Name
+    except Exception:
+        return None
+
+
 def _extract_hostname(candidate_text):
     """Parses address-bar text as a URL, rejecting anything that looks like
     a search query (contains whitespace) rather than an actual address."""

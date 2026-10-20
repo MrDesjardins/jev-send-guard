@@ -16,6 +16,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 from core import api_key as api_key_store
 from core import config
+from core import context
 from core import jev_client
 from core import notifier
 from core import pre_filter
@@ -218,6 +219,24 @@ def run(stop_event, pause_event=None, backend=None):
                 None,
             )
             disabled_questions = set((matched_app or {}).get("disabled_questions", []))
+            app_label = (matched_app or {}).get("label") or process_name
+            # Read here, on the polling thread that owns the accessibility
+            # objects; it's bounded (core/context.py) to a fraction of a
+            # second and is typically ~25ms.
+            conversation = None
+            if config.get_send_context(current_config):
+                conversation = context.extract(backend, control)
+                if conversation is None:
+                    log.debug("context: none found")
+                else:
+                    log.info(
+                        "context: source=%s place=%r messages=%d (%d nodes, %d ms)",
+                        conversation.source, conversation.place,
+                        len(conversation.previous_messages),
+                        conversation.nodes_visited, conversation.elapsed_ms,
+                    )
+                    for message in conversation.previous_messages:
+                        log.debug("context message: %s", _preview(message))
             # Never block accessibility polling on a remote model call: if
             # the user resumes typing, this loop immediately invalidates the
             # generation and the worker silently discards its now-stale
@@ -231,7 +250,7 @@ def run(stop_event, pause_event=None, backend=None):
             threading.Thread(
                 target=handle_draft,
                 args=(due_text, anchor_rect, disabled_questions),
-                kwargs={"is_current": is_current},
+                kwargs={"is_current": is_current, "app": app_label, "context": conversation},
                 daemon=True,
                 name="jev-draft-check",
             ).start()
@@ -248,7 +267,24 @@ def has_api_key(current_config=None):
     return any(api_key_store.get_api_key(p) for p in config.get_providers(current_config))
 
 
-def _timed_check(provider, text, questions):
+def context_note(context, enabled=True):
+    """One line for the results popup saying whether — and what —
+    conversation context the checks saw."""
+    if not enabled:
+        return "Conversation context is off"
+    if context is None:
+        return "No conversation context found"
+    where = context.place or context.window_title or "this conversation"
+    if len(where) > 40:
+        where = where[:39] + "…"
+    count = len(context.previous_messages)
+    if count:
+        plural = "" if count == 1 else "s"
+        return f"💬 Used context: {where} · {count} previous message{plural}"
+    return f"💬 Used context: {where} · no previous messages found"
+
+
+def _timed_check(provider, text, questions, context_state=None):
     """Run one provider's check. Returns (scores or None, elapsed ms)."""
     key = api_key_store.get_api_key(provider)
     if not key:
@@ -258,22 +294,30 @@ def _timed_check(provider, text, questions):
         )
         return None, None
     start = time.perf_counter()
-    scores = jev_client.check_draft(key, text, questions=questions, provider=provider)
+    scores = jev_client.check_draft(
+        key, text, questions=questions, provider=provider, context=context_state
+    )
     return scores, round((time.perf_counter() - start) * 1000)
 
 
-def handle_draft(text, anchor_rect=None, disabled_questions=None, is_current=None):
+def handle_draft(
+    text, anchor_rect=None, disabled_questions=None, is_current=None, app=None, context=None
+):
     """Evaluate one draft and notify only if it is still the current one.
 
     ``is_current`` is supplied by ``run`` for asynchronous evaluations.  It
-    remains optional so this small unit is also usable directly.
+    remains optional so this small unit is also usable directly.  ``app``
+    is the watched app's label, used only to bucket usage stats.
+    ``context`` is core/context.py's ConversationContext (or None): it is
+    sent with the draft, and gates questions that require it.
     """
     is_current = is_current or (lambda: True)
     if not pre_filter.should_check(text):
         log.info("pre-filter: skip (too short / plain ack)")
         return
 
-    active_questions = jev_client.get_active_questions(disabled_questions)
+    context_state = context.to_state() if context is not None else {}
+    active_questions = jev_client.get_active_questions(disabled_questions, set(context_state))
     if not active_questions:
         log.info("no active questions for this app (all disabled), skipping")
         return
@@ -292,7 +336,10 @@ def handle_draft(text, anchor_rect=None, disabled_questions=None, is_current=Non
     # "both" runs the providers side by side, so the popup waits for the
     # slower one rather than the sum of the two.
     with ThreadPoolExecutor(max_workers=len(providers)) as pool:
-        futures = [pool.submit(_timed_check, p, text, active_questions) for p in providers]
+        futures = [
+            pool.submit(_timed_check, p, text, active_questions, context_state)
+            for p in providers
+        ]
         outcomes = [future.result() for future in futures]
     if not is_current():
         log.info("discarding stale result")
@@ -313,14 +360,13 @@ def handle_draft(text, anchor_rect=None, disabled_questions=None, is_current=Non
     # A question is flagged when any provider that answered is confident
     # enough; each provider's own score is still shown side by side.
     rows = []
-    flagged = []
+    stat_outcomes = {}
     for question_key, question in active_questions.items():
         question_scores = [
             None if scores is None else scores.get(question_key) for scores, _ms in outcomes
         ]
         concern = any(jev_client.is_concern(score) for score in question_scores)
-        if concern:
-            flagged.append(question_key)
+        stat_outcomes[question_key] = question["severity"] if concern else "good"
         rows.append((
             jev_client.label_for(question_key, question),
             concern,
@@ -337,7 +383,8 @@ def handle_draft(text, anchor_rect=None, disabled_questions=None, is_current=Non
     if not is_current():
         log.info("discarding stale result")
         return
-    stats.record_check(flagged)
+    stats.record_check(stat_outcomes, app=app)
 
-    log.info("notifying results: %s %s (anchor_rect=%s)", columns, rows, anchor_rect)
-    notifier.notify_results(rows, columns, anchor_rect)
+    note = context_note(context, enabled=config.get_send_context())
+    log.info("notifying results: %s %s %r (anchor_rect=%s)", columns, rows, note, anchor_rect)
+    notifier.notify_results(rows, columns, anchor_rect, note)

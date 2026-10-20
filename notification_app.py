@@ -149,8 +149,9 @@ def _results_layout(payload):
     for item in payload["rows"]:
         text = f"{item['label']}: {item['message']}" if item["concern"] else f"{item['label']}: Looks good"
         laid_out.append((item, text, _line_count(text, text_width) * 16 + 8))
-    # title + provider header + rows + footer caption + padding
-    height = 34 + 32 + sum(row_height for *_rest, row_height in laid_out) + 18 + 8
+    # title + provider header + rows + context note + footer caption + padding
+    note_height = 18 if payload.get("context_note") else 0
+    height = 34 + 32 + sum(row_height for *_rest, row_height in laid_out) + note_height + 18 + 8
     return laid_out, text_width, height
 
 
@@ -295,6 +296,8 @@ def show(payload):
                 cell = _label(_pct(score), score_color, y, row_height, x=column_x(col), width=SCORE_COLUMN_WIDTH, bold=True)
                 cell.setAlignment_(AppKit.NSTextAlignmentRight)
                 content.addSubview_(cell)
+        if items.get("context_note"):
+            content.addSubview_(_label(items["context_note"], gray, 26, 16, font_size=10))
         caption = _label("% = how likely the issue is present", gray, 8, 16, font_size=10)
         caption.setAlignment_(AppKit.NSTextAlignmentRight)
         content.addSubview_(caption)

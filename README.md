@@ -4,9 +4,10 @@ A small background agent that watches whatever text field currently has OS
 focus — but only in an explicit allowlist of apps you configure — and,
 after you stop typing for about a second, runs fast `noul` questions
 against [TypeSafe AI's Jev model](https://docs.typesafe.ai) on the current
-draft. Five questions ship built in (curt/blunt, missing a clear ask,
-unprofessional, impolite, sarcasm) and are fully editable — or you can add your own
-— from the tray's Settings window. A small popup appears anchored right
+draft. Six questions ship built in (curt/blunt, missing a clear ask,
+unprofessional, impolite, sarcasm, and — when the conversation above the
+text box can be read — whether the reply answers what was asked) and are
+fully editable — or you can add your own — from the tray's Settings window. A small popup appears anchored right
 next to the field: red for an error-severity concern (curt, missing ask,
 impolite, sarcasm by default), yellow for a warning (unprofessional by default),
 green with a checkmark if it's clean. It never blocks anything — there's no
@@ -15,9 +16,9 @@ rationale, including the v1 Chrome-extension approach this replaced and why.
 
 ## Screenshots & demo
 
-| Watched-apps settings | Configure checks |
-| --- | --- |
-| ![Watched apps settings](docs/media/JevSendGuardSetting.png) | ![Configure checks settings](docs/media/JevSendGuardConfigurationSettings.png) |
+| Settings | Configure checks | Usage stats |
+| --- | --- | --- |
+| ![Settings: watched apps, delays, model, conversation context, API keys, usage](docs/media/JevSendGuardSetting.png) | ![Configure checks settings](docs/media/JevSendGuardConfigurationSettings.png) | ![Usage stats: good/warning/error per check, filterable by period and app](docs/media/JevSendGuardUsageStats.png) |
 
 The result popup in **Both** mode: one score column per model, each
 model's response time in its header, and a flag whenever either model is
@@ -70,9 +71,12 @@ Click the icon for:
   run for a specific app, configure the checks themselves (wording,
   severity, on/off) globally, set the delay before a draft is checked
   (how long you must pause typing; 0.3–10s, default 0.6s, applied live),
+  how long the results popup stays open (3–120s, default 15s; it still
+  closes as soon as you type again), whether conversation context is sent,
   pick the model (Jev, Mercury, or Both — see below), set the API
   keys, and see local usage stats
-  (how many checks ran, how many were flagged, broken down by check).
+  (how many drafts came back good vs. raised a warning vs. an error,
+  viewed by check, by app, or by day, and filtered by period and app).
   Nothing is watched until you add at least one app; the default allowlist
   is empty.
 - **Paused** — indefinite toggle.
@@ -163,6 +167,7 @@ uv run manage.py set-key --provider mercury   # Inception (Mercury) key
 uv run manage.py add        # interactive: switch to the target app, type a couple of words
 uv run manage.py list
 uv run manage.py remove "Discord messages"
+uv run manage.py inspect-context   # what conversation context is found in a text box
 uv run agent.py              # Ctrl+C to stop
 ```
 
@@ -176,8 +181,34 @@ time out.
 
 A detailed trace always goes to `~/.jev-send-guard/agent.log`; set
 `JEV_DEBUG=1` to also mirror it to the console. Local-only usage stats
-(never sent anywhere) live at `~/.jev-send-guard/stats.json`, visible from
-Settings.
+(never sent anywhere, bucketed by local date and watched app) live at
+`~/.jev-send-guard/stats.json`, visible from Settings → View stats... .
+
+### Conversation context
+
+Each check also sends where you're typing and what you're replying to, so
+a reply is judged against the conversation, not in isolation. Nothing
+app-specific is installed: the same accessibility tree that provides the
+draft is walked *upward* from the text box. The first list found above
+the input, in the same column, is the message history (this is how
+Discord's channel list and a thread panel's list are told apart from the
+sidebar or member list); its last few items become `previous_messages`.
+Without a list, the text blocks just above the input are used instead.
+The first named container (e.g. `general (channel)`) becomes `place`,
+and the window title is sent as `window_title` (it often says what the
+tree doesn't: Discord labels a DM "Name (channel)", but titles it
+`@Name - Discord`). All of it goes in the request's `state.context`.
+
+It is bounded (a few hundred UI nodes, half a second; ~25 ms on Discord)
+and fails open: if nothing is found, the draft is checked exactly as
+before. The **Answers the thread** check only runs when previous messages
+were found. Turn it all off with *Send conversation context* in Settings
+(`send_context = false` in config.toml).
+
+To see what it finds in a given app, run `uv run manage.py
+inspect-context`, click into the text box within 5 seconds, and read the
+result. A tree dump is saved under `~/.jev-send-guard/context-dumps/`
+(local only) for tuning the heuristic on that app.
 
 ## Why the checks go in one request
 
@@ -244,6 +275,7 @@ core/                        Pure Python, OS-agnostic
   api_key.py                                OS credential store via `keyring`
   config.py                                   Allowlist + question overrides (~/.jev-send-guard/config.toml)
   stats.py                                      Local-only usage stats (~/.jev-send-guard/stats.json)
+  context.py                                    Conversation context from the accessibility tree
   logging_setup.py                                Shared logging config (console + file)
 
 platform_backends/

@@ -218,3 +218,27 @@ def test_invalid_provider_is_rejected_and_ignored_on_read():
         config.set_provider("gpt")
     config.save_config({"apps": [], "provider": "nonsense"})
     assert config.get_provider() == "jev"
+
+
+def test_popup_seconds_default_set_and_reset():
+    assert config.get_popup_seconds() == config.DEFAULT_POPUP_SECONDS
+    assert config.set_popup_seconds("30") == 30.0
+    assert config.get_popup_seconds() == 30.0
+    config.reset_popup_seconds()
+    assert config.get_popup_seconds() == config.DEFAULT_POPUP_SECONDS
+
+
+@pytest.mark.parametrize("value", ["", "abc", "1", "500", True])
+def test_popup_seconds_rejects_bad_values(value):
+    with pytest.raises(ValueError):
+        config.set_popup_seconds(value)
+
+
+def test_invalid_popup_seconds_in_file_falls_back_to_default():
+    assert config.get_popup_seconds({"popup_seconds": "nonsense"}) == config.DEFAULT_POPUP_SECONDS
+
+
+def test_send_context_defaults_on_and_can_be_turned_off():
+    assert config.get_send_context() is True
+    config.set_send_context(False)
+    assert config.get_send_context() is False
