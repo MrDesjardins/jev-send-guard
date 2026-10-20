@@ -19,9 +19,14 @@ rationale, including the v1 Chrome-extension approach this replaced and why.
 | --- | --- |
 | ![Watched apps settings](docs/media/JevSendGuardSetting.png) | ![Configure checks settings](docs/media/JevSendGuardConfigurationSettings.png) |
 
-<video src="docs/media/JevSendDemo1.mp4" controls width="600"></video>
+The result popup in **Both** mode: one score column per model, each
+model's response time in its header, and a flag whenever either model is
+confident:
 
-(If the video above doesn't render, [watch/download it directly](docs/media/JevSendDemo1.mp4).)
+![Result popup comparing Jev and Mercury](docs/media/JevMercury.png)
+
+An [older demo video](docs/media/JevSendDemo1.mp4) shows the full flow with
+the earlier single-model, yes/no popup.
 
 ## Status
 
