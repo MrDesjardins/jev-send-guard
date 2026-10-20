@@ -147,10 +147,19 @@ Settings → **Model** picks which backend scores drafts:
 - **Both**: calls the two in parallel. A check is flagged when either one
   is at least 70% sure.
 
-The result popup shows each model's score as a percentage (how likely the
-issue is present), one column per model, with that model's response time
-in ms in the column header. If one model fails in Both mode, its column
-shows "failed" and the other model's results still appear.
+The result popup shows, under **Chance of a problem**, each model's score
+as a percentage: how likely that check's problem is present, so lower is
+better (`Tone 11%` means an 11% chance the tone is a problem, not 11%
+good). A score of 70% or more flags the check. There is one column per
+model, with that model's response time in ms in the column header. A
+check with no problem shows just its name and a green ✓.
+
+The loading popup is the same card: every check's row and every model's
+column, with `…` until the scores arrive. In Both mode the faster model's
+column fills in first while the other still says "checking…"; a check
+one model already flagged is shown right away, and the others stay gray
+until both have answered. If one model fails, its column shows "failed"
+and the other model's results still appear.
 
 Each model needs its own key. Set them in Settings (stored in the OS
 credential store), or put them in a `.env` file at the repo root. A `.env`
@@ -201,6 +210,14 @@ The first named container (e.g. `general (channel)`) becomes `place`,
 and the window title is sent as `window_title` (it often says what the
 tree doesn't: Discord labels a DM "Name (channel)", but titles it
 `@Name - Discord`). All of it goes in the request's `state.context`.
+
+Slack on macOS is handled by the same walk, with no Slack-specific code:
+its channel list reports a 1×1 rect (treated as "position unknown", so
+the rows' own rects decide), a thread panel's reply box is the last row
+of the thread's own list (the rows before it are the thread), and each
+row's app-provided label (`Author: text. time. 2 replies.`) is used as the
+message, since the author is otherwise only a button. `place` is then the
+list's name, e.g. `Thread in ros-ai-sharing (channel, 1 reply)`.
 
 It is bounded (a few hundred UI nodes, half a second; ~25 ms on Discord)
 and fails open: if nothing is found, the draft is checked exactly as

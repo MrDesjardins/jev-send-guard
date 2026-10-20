@@ -215,12 +215,13 @@ def test_typing_discards_an_inflight_jev_result(monkeypatch):
     stop_event.set()
     thread.join(timeout=2)
 
-    assert checking == [(LABELS, None, ["Jev"])]
+    assert checking == [(LABELS, None, ["Jev"], NO_CONTEXT)]
     assert notified == []
 
 
 # Without conversation context: "Answers the thread" requires previous
 # messages, so it isn't asked.
+NO_CONTEXT = "No conversation context found"
 LABELS = ["Tone", "Clear ask", "Professionalism", "Respectfulness", "Sarcasm", "Accuracy"]
 
 
@@ -249,7 +250,7 @@ def test_checking_panel_is_replaced_with_one_row_per_result(monkeypatch):
 
     watch_loop.handle_draft("Please decide whether we should proceed.")
 
-    assert checking == [(LABELS, None, ["Jev"])]
+    assert checking == [(LABELS, None, ["Jev"], NO_CONTEXT)]
     rows, columns, anchor, note = results[0]
     assert rows == [
         ("Tone", False, "This might read as curt or blunt.", "error", [0.1]),
@@ -345,7 +346,7 @@ def test_timeout_replaces_progress_with_an_unavailable_state(monkeypatch):
 
     watch_loop.handle_draft("Please decide whether we should proceed.")
 
-    assert checking == [(LABELS, None, ["Jev"])]
+    assert checking == [(LABELS, None, ["Jev"], NO_CONTEXT)]
     assert unavailable == [(LABELS, None, ["Jev"])]
 
 
@@ -463,3 +464,39 @@ def test_context_note_describes_what_the_checks_saw():
     assert watch_loop.context_note(long_title) == (
         "💬 Used context: " + "x" * 39 + "… · no previous messages found"
     )
+
+
+def test_both_fills_in_the_first_answer_before_the_second(monkeypatch):
+    """With Jev + Mercury, the card updates when the faster one answers."""
+    monkeypatch.setattr(watch_loop.config, "get_providers", lambda *_args: ["jev", "mercury"])
+    monkeypatch.setattr(watch_loop.api_key_store, "get_api_key", lambda *_args: "key")
+    mercury_may_answer = threading.Event()
+    progress = []
+    results = []
+
+    def check(_key, _text, questions=None, provider="jev", context=None):
+        if provider == "mercury":
+            assert mercury_may_answer.wait(timeout=2)
+            return {key: 0.9 for key in questions}
+        return {key: 0.1 for key in questions}
+
+    def on_progress(*args):
+        progress.append(args)
+        mercury_may_answer.set()
+
+    monkeypatch.setattr(watch_loop.jev_client, "check_draft", check)
+    monkeypatch.setattr(watch_loop.notifier, "notify_checking", lambda *_args: None)
+    monkeypatch.setattr(watch_loop.notifier, "notify_progress", on_progress)
+    monkeypatch.setattr(watch_loop.notifier, "notify_results", lambda *args: results.append(args))
+    monkeypatch.setattr(watch_loop.stats, "record_check", lambda *_args, **_kwargs: None)
+
+    watch_loop.handle_draft("Please decide whether we should proceed.")
+
+    assert len(progress) == 1
+    rows, columns, _anchor, _note = progress[0]
+    assert columns[0][0] == "Jev" and len(columns[0]) == 2
+    assert columns[1] == ("Mercury", None, True)
+    assert rows[0][4] == [0.1, None]
+    rows, columns, _anchor, _note = results[0]
+    assert [len(column) for column in columns] == [2, 2]
+    assert rows[0][4] == [0.1, 0.9]

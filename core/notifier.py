@@ -144,18 +144,153 @@ def _join_names(provider_names):
     return " + ".join(provider_names)
 
 
-def _pct(score):
-    return "—" if score is None else f"{round(score * 100)}%"
+_STATE_STYLE = {
+    "error": {"icon": "⛔", "color": CONCERN_RED},
+    "warning": {"icon": "⚠", "color": CONCERN_YELLOW},
+    "ok": {"icon": "✓", "color": OK_GREEN},
+    "checking": {"icon": "◌", "color": CHECKING_GRAY},
+    "none": {"icon": "", "color": CHECKING_GRAY},
+}
+
+SCORE_HEADER = "Chance of a problem"
 
 
-def _score_color(score, severity):
+def score_caption():
+    from core.jev_client import NOUL_THRESHOLD
+
+    return f"Lower is better · {round(NOUL_THRESHOLD * 100)}%+ is flagged"
+
+
+def _verb(names):
+    return "is" if len(names) == 1 else "are"
+
+
+def table_view(rows, columns, context_note=None):
+    """Everything the checking/results card shows, computed once for both
+    the Tk (Windows) and AppKit (macOS, notification_app.py) renderers so
+    the two can't drift, and so a loading card, a half-answered "Both"
+    card and the final one share one layout: same title line, same
+    provider columns, one row per check.
+
+    ``rows``: ``(label, concern, message, severity, scores)``, ``scores``
+    holding one probability (or None) per column. ``columns``:
+    ``(provider_name, elapsed_ms)`` with ``elapsed_ms`` None when that
+    call failed, or ``(provider_name, elapsed_ms, pending)`` with
+    ``pending`` True while that provider hasn't answered yet.
+
+    States are "error", "warning", "ok", "checking" (still waiting) or,
+    for a cell only, "none" (that provider gave no score). A row with no
+    concern yet is "checking" until every provider has answered, since a
+    later one could still flag it; a flagged row is final as soon as one
+    provider flags it.
+    """
     from core.jev_client import is_concern
 
-    if score is None:
-        return CHECKING_GRAY
-    if is_concern(score):
-        return _SEVERITY_STYLE.get(severity, _SEVERITY_STYLE["warning"])["color"]
-    return OK_GREEN
+    columns = [tuple(column) + (False,) * (3 - len(column)) for column in columns]
+    names = [name for name, _ms, _pending in columns]
+    waiting = [name for name, _ms, pending in columns if pending]
+
+    view_rows = []
+    for label, concern, message, severity, scores in rows:
+        severity = severity if severity in ("error", "warning") else "warning"
+        if concern:
+            state, text = severity, f"{label}: {message}"
+        else:
+            state, text = ("checking" if waiting else "ok"), label
+        cells = []
+        for (_name, _ms, pending), score in zip(columns, scores):
+            if pending:
+                cells.append({"text": "…", "state": "checking"})
+            elif score is None:
+                cells.append({"text": "—", "state": "none"})
+            else:
+                cells.append({
+                    "text": f"{round(score * 100)}%",
+                    "state": severity if is_concern(score) else "ok",
+                })
+        view_rows.append({"state": state, "text": text, "cells": cells})
+
+    flagged = [row for row in view_rows if row["state"] in ("error", "warning")]
+    if flagged:
+        state = "error" if any(row["state"] == "error" for row in flagged) else "warning"
+        title = f"Before you send — {' + '.join(names)} noticed:"
+    elif waiting:
+        state = "checking"
+        if len(waiting) == len(names):
+            title = f"{' + '.join(names)} {_verb(names)} checking your draft"
+        else:
+            title = f"{' + '.join(waiting)} {_verb(waiting)} still checking…"
+    else:
+        state = "ok"
+        title = f"{' + '.join(names)} checked your draft"
+
+    headers = []
+    for name, elapsed_ms, pending in columns:
+        timing = "checking…" if pending else ("failed" if elapsed_ms is None else f"{elapsed_ms} ms")
+        headers.append(f"{name}\n{timing}")
+
+    return {
+        "state": state,
+        "title": title,
+        "score_header": SCORE_HEADER,
+        "headers": headers,
+        "rows": view_rows,
+        "context_note": context_note,
+        "caption": score_caption(),
+    }
+
+
+def pending_rows(labels, column_count):
+    """Rows for a card on which no provider has answered yet."""
+    return [(label, False, "", "warning", [None] * column_count) for label in labels]
+
+
+def _build_table(view):
+    """Tk renderer for table_view()."""
+    def build(frame, _dismiss):
+        style = _STATE_STYLE[view["state"]]
+        content = _build_card(frame, style["color"])
+        _row(content, style["icon"], view["title"], style["color"], font_size=10, bold=True)
+
+        table = tk.Frame(content, bg=BG)
+        table.pack(fill="x")
+        table.columnconfigure(1, weight=1)
+        tk.Label(
+            table, text=view["score_header"], fg=CHECKING_GRAY, bg=BG, font=("Segoe UI", 8),
+            anchor="sw", justify="left",
+        ).grid(row=0, column=1, sticky="sw", padx=(6, 0), pady=(0, 4))
+        for col, header in enumerate(view["headers"]):
+            tk.Label(
+                table, text=header, fg=CHECKING_GRAY, bg=BG,
+                font=("Segoe UI", 8), justify="right",
+            ).grid(row=0, column=2 + col, sticky="e", padx=(10, 0), pady=(0, 4))
+
+        text_wrap = WIDTH - ACCENT_WIDTH - 28 - 26 - SCORE_COLUMN_WIDTH * len(view["headers"])
+        for index, row in enumerate(view["rows"], start=1):
+            row_style = _STATE_STYLE[row["state"]]
+            tk.Label(table, text=row_style["icon"], fg=row_style["color"], bg=BG, font=("Segoe UI", 13)).grid(
+                row=index, column=0, sticky="nw"
+            )
+            tk.Label(
+                table, text=row["text"], fg=row_style["color"], bg=BG, font=("Segoe UI", 9),
+                anchor="w", justify="left", wraplength=text_wrap,
+            ).grid(row=index, column=1, sticky="w", padx=(6, 0), pady=(0, 5))
+            for col, cell in enumerate(row["cells"]):
+                tk.Label(
+                    table, text=cell["text"], fg=_STATE_STYLE[cell["state"]]["color"], bg=BG,
+                    font=("Segoe UI", 9, "bold"),
+                ).grid(row=index, column=2 + col, sticky="ne", padx=(10, 0))
+
+        if view["context_note"]:
+            tk.Label(
+                content, text=view["context_note"], fg=CHECKING_GRAY, bg=BG, font=("Segoe UI", 8),
+                anchor="w", justify="left", wraplength=WIDTH - ACCENT_WIDTH - 28,
+            ).pack(anchor="w", fill="x", pady=(4, 0))
+        tk.Label(
+            content, text=view["caption"], fg=CHECKING_GRAY, bg=BG, font=("Segoe UI", 8),
+        ).pack(anchor="e", pady=(2, 0))
+
+    return build
 
 
 def _build_concerns(items):
@@ -206,89 +341,6 @@ def _build_ok():
     def build(frame, _dismiss):
         content = _build_card(frame, OK_GREEN)
         _row(content, "✓", "Looks good", OK_GREEN, font_size=10, bold=True)
-
-    return build
-
-
-def _build_checking(labels, provider_names):
-    """A fixed-size progress panel, shown while the provider call(s) run."""
-    def build(frame, _dismiss):
-        content = _build_card(frame, CHECKING_GRAY)
-        verb = "is" if len(provider_names) == 1 else "are"
-        _row(
-            content, "◌", f"{_join_names(provider_names)} {verb} checking your draft",
-            CHECKING_GRAY, font_size=10, bold=True,
-        )
-        for label in labels:
-            _row(content, "◌", f"{label}: Checking…", CHECKING_GRAY)
-
-    return build
-
-
-def _build_results(rows, columns, context_note=None):
-    """Render every check in a stable layout after a progress panel.
-
-    Each row is ``(label, concern, message, severity, scores)``, ``scores``
-    holding one probability (or None) per provider; ``columns`` is one
-    ``(provider_name, elapsed_ms or None if it failed)`` per provider.
-    ``context_note``, if given, is a gray line above the footer saying
-    whether conversation context was used (see watch_loop.context_note).
-
-    Keeping the same title-plus-one-row-per-question layout as
-    `_build_checking` makes the transition legible rather than a sequence of
-    popups that move or grow.
-    """
-    def build(frame, _dismiss):
-        flagged = [row for row in rows if row[1]]
-        overall = "error" if any(row[3] == "error" for row in flagged) else "warning"
-        accent = (
-            _SEVERITY_STYLE[overall]["color"] if flagged else OK_GREEN
-        )
-        content = _build_card(frame, accent)
-        names = _join_names([name for name, _ms in columns])
-        title = f"Before you send — {names} noticed:" if flagged else f"{names} checked your draft"
-        title_icon = _SEVERITY_STYLE[overall]["icon"] if flagged else "✓"
-        _row(content, title_icon, title, accent, font_size=10, bold=True)
-
-        table = tk.Frame(content, bg=BG)
-        table.pack(fill="x")
-        table.columnconfigure(1, weight=1)
-        for col, (name, elapsed_ms) in enumerate(columns):
-            timing = "failed" if elapsed_ms is None else f"{elapsed_ms} ms"
-            tk.Label(
-                table, text=f"{name}\n{timing}", fg=CHECKING_GRAY, bg=BG,
-                font=("Segoe UI", 8), justify="right",
-            ).grid(row=0, column=2 + col, sticky="e", padx=(10, 0), pady=(0, 4))
-
-        text_wrap = WIDTH - ACCENT_WIDTH - 28 - 26 - SCORE_COLUMN_WIDTH * len(columns)
-        for index, (label, concern, message, severity, scores) in enumerate(rows, start=1):
-            if concern:
-                style = _SEVERITY_STYLE.get(severity, _SEVERITY_STYLE["warning"])
-                icon_char, color, text = style["icon"], style["color"], f"{label}: {message}"
-            else:
-                icon_char, color, text = "✓", OK_GREEN, f"{label}: Looks good"
-            tk.Label(table, text=icon_char, fg=color, bg=BG, font=("Segoe UI", 13)).grid(
-                row=index, column=0, sticky="nw"
-            )
-            tk.Label(
-                table, text=text, fg=color, bg=BG, font=("Segoe UI", 9),
-                anchor="w", justify="left", wraplength=text_wrap,
-            ).grid(row=index, column=1, sticky="w", padx=(6, 0), pady=(0, 5))
-            for col, score in enumerate(scores):
-                tk.Label(
-                    table, text=_pct(score), fg=_score_color(score, severity), bg=BG,
-                    font=("Segoe UI", 9, "bold"),
-                ).grid(row=index, column=2 + col, sticky="ne", padx=(10, 0))
-
-        if context_note:
-            tk.Label(
-                content, text=context_note, fg=CHECKING_GRAY, bg=BG, font=("Segoe UI", 8),
-                anchor="w", justify="left", wraplength=WIDTH - ACCENT_WIDTH - 28,
-            ).pack(anchor="w", fill="x", pady=(4, 0))
-        tk.Label(
-            content, text="% = how likely the issue is present", fg=CHECKING_GRAY, bg=BG,
-            font=("Segoe UI", 8),
-        ).pack(anchor="e", pady=(2, 0))
 
     return build
 
@@ -499,6 +551,9 @@ def dismiss():
         _popup_process = None
 
 
+CHECKING_DISMISS_MS = 10000
+
+
 def _results_dismiss_ms():
     """The user's "Keep results open for" setting, in ms. Read on each
     popup so a change in Settings applies to the next one."""
@@ -517,42 +572,33 @@ def notify(items, anchor_rect=None):
         _enqueue(_build_concerns(items), anchor_rect, _results_dismiss_ms())
 
 
-def notify_checking(labels, anchor_rect=None, provider_names=("Jev",)):
-    """Show immediate, neutral progress for every question in a batch."""
-    provider_names = list(provider_names)
+def _show_table(view, anchor_rect, auto_dismiss_ms):
     if sys.platform == "darwin":
-        _show_macos_panel(
-            "checking", {"labels": labels, "providers": provider_names}, anchor_rect, 10000
-        )
+        _show_macos_panel("table", view, anchor_rect, auto_dismiss_ms)
     else:
-        _enqueue(_build_checking(labels, provider_names), anchor_rect, 10000)
+        _enqueue(_build_table(view), anchor_rect, auto_dismiss_ms)
+
+
+def notify_checking(labels, anchor_rect=None, provider_names=("Jev",), context_note=None):
+    """Show the results card before any answer: every check's row, every
+    provider's column, "…" in each score cell."""
+    provider_names = list(provider_names)
+    columns = [(name, None, True) for name in provider_names]
+    view = table_view(pending_rows(labels, len(columns)), columns, context_note)
+    _show_table(view, anchor_rect, CHECKING_DISMISS_MS)
+
+
+def notify_progress(rows, columns, anchor_rect=None, context_note=None):
+    """Some providers answered, others are still pending (``columns`` as
+    in table_view, with ``pending`` set): fill in what's known. Stays up
+    as long as the checking card would, since more is coming."""
+    _show_table(table_view(rows, columns, context_note), anchor_rect, CHECKING_DISMISS_MS)
 
 
 def notify_results(rows, columns, anchor_rect=None, context_note=None):
-    """Replace the progress panel with the complete, stable batch result.
-
-    See `_build_results` for the shape of ``rows``, ``columns`` and
-    ``context_note``."""
-    if sys.platform == "darwin":
-        # JSON turns tuples into lists, which notification_app.py handles
-        # identically.  Use dictionaries here so the payload stays explicit.
-        payload = {
-            "columns": [{"name": name, "ms": ms} for name, ms in columns],
-            "rows": [
-                {
-                    "label": label,
-                    "concern": concern,
-                    "message": message,
-                    "severity": severity,
-                    "scores": list(scores),
-                }
-                for label, concern, message, severity, scores in rows
-            ],
-            "context_note": context_note,
-        }
-        _show_macos_panel("results", payload, anchor_rect, _results_dismiss_ms())
-    else:
-        _enqueue(_build_results(rows, columns, context_note), anchor_rect, _results_dismiss_ms())
+    """Replace the progress card with the complete, stable result. See
+    table_view for the shape of ``rows`` and ``columns``."""
+    _show_table(table_view(rows, columns, context_note), anchor_rect, _results_dismiss_ms())
 
 
 def notify_unavailable(labels, anchor_rect=None, provider_names=("Jev",)):

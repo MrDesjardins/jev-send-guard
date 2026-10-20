@@ -322,3 +322,117 @@ def test_describe_tree_includes_raw_roles():
     lines = context.describe_tree(WithRaw(), textbox, max_ancestors=2)
     assert lines[0].startswith("input: edit/AXGroup")
     assert any("<== input branch" in line for line in lines)
+
+
+class LabelBackend(FakeBackend):
+    """macOS: list rows are named only by app-provided labels."""
+    CONTEXT_ITEM_LABELS = True
+
+
+def slack_message(label, author, text, top, left=967, right=1482, height=52):
+    """A Slack row as on macOS: titled "Author: text. time.", author as a
+    button, a "1 reply" button, and the text runs as static text."""
+    body = Node("other", "", (left, top, right, top + height), [
+        Node("button", author, (left + 64, top + 4, left + 180, top + 26)),
+        Node("link", "Yesterday at 1:52:56 PM", (left + 190, top + 8, left + 236, top + 24)),
+        Node("other", "", (left + 64, top + 26, right - 20, top + 48), [
+            Node("text", text, (left + 64, top + 28, right - 40, top + 46)),
+        ]),
+        Node("button", "1 reply", (left + 64, top + 48, left + 110, top + 50)),
+    ])
+    return Node("other", label, (left, top, right, top + height), [body])
+
+
+def slack_divider(label, top, left=967, right=1482):
+    return Node("other", label, (left, top, right, top + 24), [
+        Node("other", "", (left, top, right, top + 24), [
+            Node("other", "Jump to date", (left + 400, top, left + 500, top + 24)),
+        ]),
+    ])
+
+
+def slack_composer(textbox):
+    """Slack wraps its editor in a group named "composer"."""
+    left, top, right, bottom = textbox.rect
+    return Node("other", "composer", (left - 1, top - 39, right + 1, bottom + 41), [
+        Node("other", "Formatting", (left, top - 38, right, top)),
+        Node("other", "", textbox.rect, [textbox]),
+        Node("other", "Composer actions", (left, bottom, right, bottom + 40)),
+    ])
+
+
+def test_slack_channel_list_with_a_one_pixel_rect_and_labeled_rows():
+    """Mirrors a live macOS Slack dump: the history list reports a 1x1
+    rect at its corner, rows are labeled, dividers are labeled too but
+    hold no text, and the composer is a named wrapper."""
+    history = Node("list", "ros-ai-sharing (channel)", (967, 1189, 968, 1190), [
+        slack_divider("Yesterday Press enter to select a date to jump to.", 300),
+        slack_message("Jack Buckley: Also mentions our assessments. 12:21 PM. 8 replies.",
+                      "Jack Buckley", "Also mentions our assessments", 324),
+        slack_divider("Today Press enter to select a date to jump to.", 376),
+        slack_message("Patrick Desjardins: Diffusion LLMs are fast. 1:52 PM. 1 reply.",
+                      "Patrick Desjardins", "Diffusion LLMs are fast", 400),
+        Node("other", "", (967, 1166, 1482, 1190)),
+    ])
+    textbox = Node("edit", "Message to ros-ai-sharing", (988, 1221, 1461, 1259))
+    pane = Node("other", "", (967, 167, 1483, 1324), [
+        Node("other", "", (967, 167, 1483, 1190), [Node("other", "", (967, 159, 1483, 1190), [history])]),
+        Node("other", "", (967, 1182, 1483, 1324), [slack_composer(textbox)]),
+    ])
+    Node("other", "ros-ai-sharing App", (967, 80, 1483, 1324), [
+        Node("other", "Tabs", (983, 129, 1471, 167), [Node("text", "Messages", (983, 129, 1100, 167))]),
+        pane,
+    ])
+
+    ctx = context.extract(LabelBackend(), textbox)
+    assert ctx.source == "list"
+    assert ctx.place == "ros-ai-sharing (channel)"
+    assert ctx.previous_messages == [
+        "Jack Buckley: Also mentions our assessments. 12:21 PM. 8 replies.",
+        "Patrick Desjardins: Diffusion LLMs are fast. 1:52 PM. 1 reply.",
+    ]
+
+
+def slack_thread(backend_labels=True):
+    """Mirrors a live macOS Slack thread panel: the reply box is the last
+    row of the thread's own list, next to the channel's list."""
+    textbox = Node("edit", "Reply to thread in ros-ai-sharing", (1500, 770, 2036, 808))
+    thread = Node("list", "Thread in ros-ai-sharing (channel, 1 reply)", (1483, 129, 2052, 899), [
+        slack_message("Patrick Desjardins: Diffusion LLMs are fast. Yesterday at 1:52 PM.",
+                      "Patrick Desjardins", "Diffusion LLMs are fast", 129, 1483, 2052, 484),
+        Node("other", "", (1483, 613, 2052, 637), [Node("text", "1 reply", (1500, 613, 1560, 637))]),
+        slack_message("Patrick Desjardins: Ill give it a shot tonight. Yesterday at 1:54 PM.",
+                      "Patrick Desjardins", "Ill give it a shot tonight", 637, 1483, 2052, 82),
+        Node("other", "", (1483, 719, 2052, 899), [
+            Node("other", "", (1483, 719, 2052, 899), [slack_composer(textbox)]),
+        ]),
+    ])
+    channel = Node("list", "ros-ai-sharing (channel)", (967, 1189, 968, 1190), [
+        slack_message("Jack Buckley: channel message. 12:21 PM.", "Jack Buckley", "channel message", 400),
+    ])
+    Node("other", "", (967, 80, 2052, 1324), [
+        Node("other", "", (967, 80, 1483, 1324), [channel]),
+        Node("other", "Thread", (1483, 80, 2052, 1324), [thread]),
+    ])
+    return textbox
+
+
+def test_slack_thread_reply_box_inside_the_thread_list():
+    ctx = context.extract(LabelBackend(), slack_thread())
+    assert ctx.source == "list"
+    assert ctx.place == "Thread in ros-ai-sharing (channel, 1 reply)"
+    assert ctx.previous_messages == [
+        "Patrick Desjardins: Diffusion LLMs are fast. Yesterday at 1:52 PM.",
+        "Patrick Desjardins: Ill give it a shot tonight. Yesterday at 1:54 PM.",
+    ]
+
+
+def test_slack_thread_without_item_labels_gathers_row_text():
+    """A backend whose row names aren't curated labels (Windows) still
+    reads the thread from its list, from the rows' own text."""
+    ctx = context.extract(FakeBackend(), slack_thread())
+    assert ctx.source == "list"
+    assert ctx.place == "Thread in ros-ai-sharing (channel, 1 reply)"
+    assert ctx.previous_messages[0] == "Yesterday at 1:52:56 PM Diffusion LLMs are fast"
+    assert ctx.previous_messages[-1] == "Yesterday at 1:52:56 PM Ill give it a shot tonight"
+    assert "channel message" not in " ".join(ctx.previous_messages)

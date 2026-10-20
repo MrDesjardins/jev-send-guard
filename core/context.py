@@ -229,14 +229,34 @@ def _gather_text(walker, node, depth=0, seen=None, pieces=None):
     return " ".join(text for text in texts if text)
 
 
+def _has_text(walker, node, depth=0):
+    """Whether any named text/link node sits under `node` outside
+    buttons: a labeled row with none is a divider (Slack's "Today" date
+    picker), not a message. Visibility isn't checked — a row scrolled
+    partly out of view still holds a message."""
+    role, name, _rect = walker.info(node)
+    if role == "button":
+        return False
+    if role in TEXT_ROLES and name:
+        return True
+    if depth >= MAX_TEXT_DEPTH:
+        return False
+    return any(_has_text(walker, child, depth + 1) for child in walker.children(node))
+
+
 def _find_list(walker, node, input_rect):
     """Breadth-first search under `node` for a list in the input's column
     starting above it. Subtrees outside the column or entirely below the
-    input are pruned without being entered."""
+    input are pruned without being entered. A list only a pixel or two in
+    size (Slack's channel history on macOS reports 1x1 at its bottom-left
+    corner) has an unknown position, like a zero-size one: its items'
+    own rects still decide what is above the input."""
     queue = [node]
     while queue:
         current = queue.pop(0)
-        role, _name, rect = walker.info(current)
+        role, _name, rect, hidden = walker.info_hidden(current)
+        if role == "list" and hidden:
+            rect = None
         if not _overlaps_column(rect, input_rect) or not _starts_above(rect, input_rect):
             continue
         if role == "list" and not _same_column(rect, input_rect):
@@ -251,20 +271,35 @@ def _find_list(walker, node, input_rect):
 def _list_messages(walker, children, input_rect):
     """The last few items' text. When the list has real list items, other
     children (date dividers, "new messages" bars) are skipped. An item's
-    text is gathered from its parts rather than its own name: Chromium
-    names an item by concatenating *everything* inside it, buttons and
-    hidden duplicates included."""
+    text is gathered from its parts rather than its own name: on Windows,
+    Chromium names an item by concatenating *everything* inside it,
+    buttons and hidden duplicates included.
+
+    A backend whose item names are only ever app-provided labels
+    (CONTEXT_ITEM_LABELS: macOS, where Chromium gives a list row a title
+    only from aria-label/labelledby) uses them instead when the list has
+    any: Slack labels each message "Author: text. time. 2 replies.",
+    keeping the author its tree only has as a button. Unlabeled rows are
+    then dividers ("Yesterday", "1 reply") and are skipped."""
     infos = [walker.info(item) for item in children]
     has_items = any(role == "listitem" for role, _name, _rect in infos)
+    use_labels = bool(getattr(walker.backend, "CONTEXT_ITEM_LABELS", False)) and any(
+        name for _role, name, _rect in infos
+    )
     messages = []
     total = 0
     try:
         for item, (role, name, rect) in reversed(list(zip(children, infos))):
-            if (has_items and role != "listitem") or role == "edit":
+            if role == "edit" or (has_items and not use_labels and role != "listitem"):
+                continue
+            if use_labels and (not name or not _has_text(walker, item)):
                 continue
             if not _ends_above(rect, input_rect):
                 continue
-            text = _clean(_gather_text(walker, item) or name)
+            if use_labels:
+                text = _clean(name)
+            else:
+                text = _clean(_gather_text(walker, item) or name)
             if len(text) < MIN_MESSAGE_CHARS:
                 continue
             messages.append(text)
@@ -287,6 +322,11 @@ def extract(backend, control):
     start = time.perf_counter()
     walker = _Walker(backend)
     result = ConversationContext()
+    # The first named ancestor, used as `place` only if the level where the
+    # conversation is found has no name of its own: a wrapper right around
+    # the input (Slack names its composer "composer") says less than the
+    # conversation's container or list ("ros-ai-sharing (channel)").
+    inner_name = None
     try:
         _role, _name, input_rect = walker.info(control)
         if input_rect is None:
@@ -319,8 +359,21 @@ def extract(backend, control):
             if index is None:
                 break
             preceding = list(reversed(siblings[:index]))
-            if result.place is None and parent_name and parent_role not in ("edit", "list"):
-                result.place = parent_name
+            level_name = parent_name if parent_role not in ("edit", "list") else ""
+            # The input is a row of the conversation's own list (Slack's
+            # thread panel ends with its reply box): the rows before it are
+            # the messages. Only for a list laid out in the input's column —
+            # Google Docs keeps all comment threads in a zero-size list, and
+            # the rows before a new comment box are *other* threads.
+            if parent_role == "list" and parent_rect is not None and _same_column(
+                parent_rect, input_rect
+            ):
+                messages = _list_messages(walker, siblings[:index], input_rect)
+                if messages:
+                    result.previous_messages = messages
+                    result.source = "list"
+                    result.place = parent_name or inner_name
+                    return _finish(result, walker, backend, control, start)
             for sibling in preceding:
                 found = _find_list(walker, sibling, input_rect)
                 if found is None:
@@ -330,8 +383,7 @@ def extract(backend, control):
                 if messages:
                     result.previous_messages = messages
                     result.source = "list"
-                    if result.place is None:
-                        result.place = walker.info(list_node)[1] or None
+                    result.place = level_name or walker.info(list_node)[1] or inner_name
                     return _finish(result, walker, backend, control, start)
             # No list at this level: use text blocks just above the input,
             # but only while still close to it — wider ancestors' siblings
@@ -346,7 +398,10 @@ def extract(backend, control):
                 if messages:
                     result.previous_messages = messages
                     result.source = "text"
+                    result.place = level_name or inner_name
                     return _finish(result, walker, backend, control, start)
+            if inner_name is None and level_name:
+                inner_name = level_name
             node = parent
     except _BudgetExceeded:
         log.debug("context: budget exceeded after %d nodes", walker.visited)
@@ -354,6 +409,8 @@ def extract(backend, control):
         # Never let a context bug stop the watch loop or the check itself.
         log.exception("context: extraction failed")
         return None
+    if result.place is None:
+        result.place = inner_name
     return _finish(result, walker, backend, control, start)
 
 

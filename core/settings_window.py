@@ -900,8 +900,17 @@ def open_settings_window(on_change=None):
             if not value:
                 return
             api_key_store.set_api_key(value, provider=provider)
-            key_status_var.set("Saved.")
-            root.after(2000, lambda: key_status_var.set(""))
+            if provider in config.get_providers():
+                key_status_var.set("Saved.")
+                root.after(2000, lambda: key_status_var.set(""))
+            else:
+                # Saving a key doesn't switch the model: say so, or it looks
+                # like the key was ignored.
+                label = jev_client.provider_label(provider)
+                key_status_var.set(
+                    f"Saved. Not in use yet: pick {label} or Both under Model."
+                )
+                root.after(8000, lambda: key_status_var.set(""))
             if on_change:
                 on_change()
 

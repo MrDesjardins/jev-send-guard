@@ -131,7 +131,15 @@ def get_focused_control():
 
 
 # Tree access for core/context.py's conversation-context heuristic.
-# Untested on a live Mac so far; mirrors windows.py's role mapping.
+# Validated live on Slack (channel, DM, thread panel); mirrors windows.py's
+# role mapping.
+#
+# Chromium on macOS titles a list row (AXGroup) only from an app-provided
+# aria-label/labelledby, never by concatenating its contents, so a row's
+# name is a curated summary when present: Slack's is "Author: text. time.
+# 2 replies.", and is the only place the author survives (it's a button).
+CONTEXT_ITEM_LABELS = True
+
 _CONTEXT_ROLES = {
     "AXList": "list",
     "AXTable": "list",

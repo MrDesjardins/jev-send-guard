@@ -12,7 +12,7 @@ without restarting the loop.
 import sys
 import threading
 import time
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from core import api_key as api_key_store
 from core import config
@@ -300,6 +300,44 @@ def _timed_check(provider, text, questions, context_state=None):
     return scores, round((time.perf_counter() - start) * 1000)
 
 
+def _result_rows(active_questions, outcomes):
+    """(rows, stat outcomes) for the card. ``outcomes`` holds one
+    (scores or None, elapsed ms) per provider, or None for a provider that
+    hasn't answered yet. A question is flagged when any provider that
+    answered is confident enough; each provider's own score is still shown
+    side by side."""
+    rows = []
+    stat_outcomes = {}
+    for question_key, question in active_questions.items():
+        question_scores = [
+            None if outcome is None or outcome[0] is None else outcome[0].get(question_key)
+            for outcome in outcomes
+        ]
+        concern = any(jev_client.is_concern(score) for score in question_scores)
+        stat_outcomes[question_key] = question["severity"] if concern else "good"
+        rows.append((
+            jev_client.label_for(question_key, question),
+            concern,
+            question["message"],
+            question["severity"],
+            question_scores,
+        ))
+    return rows, stat_outcomes
+
+
+def _result_columns(provider_names, outcomes):
+    """(name, elapsed ms or None if it failed) per provider, plus a third
+    True item for a provider still pending (core/notifier.py's table_view)."""
+    columns = []
+    for name, outcome in zip(provider_names, outcomes):
+        if outcome is None:
+            columns.append((name, None, True))
+        else:
+            scores, elapsed_ms = outcome
+            columns.append((name, elapsed_ms if scores is not None else None))
+    return columns
+
+
 def handle_draft(
     text, anchor_rect=None, disabled_questions=None, is_current=None, app=None, context=None
 ):
@@ -330,17 +368,28 @@ def handle_draft(
         jev_client.label_for(question_key, question)
         for question_key, question in active_questions.items()
     ]
-    notifier.notify_checking(labels, anchor_rect, provider_names)
+    note = context_note(context, enabled=config.get_send_context())
+    notifier.notify_checking(labels, anchor_rect, provider_names, note)
 
     log.debug("calling %s...", " + ".join(provider_names))
     # "both" runs the providers side by side, so the popup waits for the
-    # slower one rather than the sum of the two.
+    # slower one rather than the sum of the two — and fills in each
+    # provider's column as soon as it answers, in the same card.
+    outcomes = [None] * len(providers)
     with ThreadPoolExecutor(max_workers=len(providers)) as pool:
-        futures = [
-            pool.submit(_timed_check, p, text, active_questions, context_state)
-            for p in providers
-        ]
-        outcomes = [future.result() for future in futures]
+        futures = {
+            pool.submit(_timed_check, p, text, active_questions, context_state): index
+            for index, p in enumerate(providers)
+        }
+        remaining = len(futures)
+        for future in as_completed(futures):
+            outcomes[futures[future]] = future.result()
+            remaining -= 1
+            if remaining and is_current():
+                rows, _stats = _result_rows(active_questions, outcomes)
+                notifier.notify_progress(
+                    rows, _result_columns(provider_names, outcomes), anchor_rect, note
+                )
     if not is_current():
         log.info("discarding stale result")
         return
@@ -357,27 +406,8 @@ def handle_draft(
                 notifier.notify_service_issue(issue, anchor_rect)
         return
 
-    # A question is flagged when any provider that answered is confident
-    # enough; each provider's own score is still shown side by side.
-    rows = []
-    stat_outcomes = {}
-    for question_key, question in active_questions.items():
-        question_scores = [
-            None if scores is None else scores.get(question_key) for scores, _ms in outcomes
-        ]
-        concern = any(jev_client.is_concern(score) for score in question_scores)
-        stat_outcomes[question_key] = question["severity"] if concern else "good"
-        rows.append((
-            jev_client.label_for(question_key, question),
-            concern,
-            question["message"],
-            question["severity"],
-            question_scores,
-        ))
-    columns = [
-        (name, elapsed_ms if scores is not None else None)
-        for name, (scores, elapsed_ms) in zip(provider_names, outcomes)
-    ]
+    rows, stat_outcomes = _result_rows(active_questions, outcomes)
+    columns = _result_columns(provider_names, outcomes)
     # Do not count or display an answer for a draft which changed while the
     # request was completing.
     if not is_current():
@@ -385,6 +415,5 @@ def handle_draft(
         return
     stats.record_check(stat_outcomes, app=app)
 
-    note = context_note(context, enabled=config.get_send_context())
     log.info("notifying results: %s %s %r (anchor_rect=%s)", columns, rows, note, anchor_rect)
     notifier.notify_results(rows, columns, anchor_rect, note)
