@@ -15,6 +15,7 @@ def test_get_question_defs_defaults():
     defs = jev_client.get_question_defs()
     assert set(defs) == {
         "curt", "missing_ask", "unprofessional", "impolite", "sarcasm", "unanswered",
+        "accuracy",
     }
     assert defs["sarcasm"]["severity"] == "error"
     assert defs["curt"]["severity"] == "error"
@@ -55,6 +56,7 @@ def test_custom_question_is_merged_into_defs():
     defs = jev_client.get_question_defs()
     assert set(defs) == {
         "curt", "missing_ask", "unprofessional", "impolite", "sarcasm", "unanswered",
+        "accuracy",
         "overpromising",
     }
     assert defs["overpromising"]["message"] == "This might be overpromising."
@@ -115,7 +117,7 @@ def test_custom_question_is_included_in_the_request_and_scored(monkeypatch):
     monkeypatch.setattr(jev_client._get_client(), "post", fake_post)
     result = jev_client.check_draft(
         "fake-key", "some text",
-        disabled_keys={"curt", "missing_ask", "unprofessional", "impolite", "sarcasm"},
+        disabled_keys=set(jev_client.QUESTIONS),
     )
     assert captured["questions"] == {"overpromising"}
     assert result == {"overpromising": 0.9}
@@ -158,7 +160,9 @@ def test_disabled_keys_param_excludes_that_question_from_the_request(monkeypatch
         return FakeResponse()
 
     monkeypatch.setattr(jev_client._get_client(), "post", fake_post)
-    result = jev_client.check_draft("fake-key", "some text", disabled_keys={"unprofessional"})
+    result = jev_client.check_draft(
+        "fake-key", "some text", disabled_keys={"unprofessional", "accuracy"}
+    )
 
     assert "unprofessional" not in captured["questions"]
     assert captured["questions"] == {"curt", "missing_ask", "impolite", "sarcasm"}
@@ -211,7 +215,7 @@ def test_missing_answer_scores_zero(monkeypatch):
     monkeypatch.setattr(jev_client._get_client(), "post", lambda *a, **k: FakeResponse())
     result = jev_client.check_draft(
         "fake-key", "some text",
-        disabled_keys={"unprofessional", "impolite", "sarcasm"},
+        disabled_keys={"unprofessional", "impolite", "sarcasm", "accuracy"},
     )
     assert result == {"curt": 0.69, "missing_ask": 0.0}
 
@@ -232,7 +236,7 @@ def test_mercury_provider_uses_inception_endpoint_and_model(monkeypatch):
     monkeypatch.setattr(jev_client._get_client(), "post", fake_post)
     result = jev_client.check_draft(
         "inception-key", "some text",
-        disabled_keys={"missing_ask", "unprofessional", "impolite", "sarcasm"},
+        disabled_keys={"missing_ask", "unprofessional", "impolite", "sarcasm", "accuracy"},
         provider="mercury",
     )
     assert captured == {
@@ -271,3 +275,9 @@ def test_context_is_sent_in_the_state(monkeypatch):
 
     jev_client.check_draft("fake-key", "some text")
     assert captured["state"] == {"draft": "some text"}
+
+
+def test_accuracy_is_a_warning_asked_without_context():
+    assert jev_client.get_question_defs()["accuracy"]["severity"] == "warning"
+    assert "requires" not in jev_client.get_question_defs()["accuracy"]
+    assert "accuracy" in jev_client.get_active_questions()

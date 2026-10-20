@@ -215,11 +215,13 @@ def test_typing_discards_an_inflight_jev_result(monkeypatch):
     stop_event.set()
     thread.join(timeout=2)
 
-    assert checking == [(["Tone", "Clear ask", "Professionalism", "Respectfulness", "Sarcasm"], None, ["Jev"])]
+    assert checking == [(LABELS, None, ["Jev"])]
     assert notified == []
 
 
-LABELS = ["Tone", "Clear ask", "Professionalism", "Respectfulness", "Sarcasm"]
+# Without conversation context: "Answers the thread" requires previous
+# messages, so it isn't asked.
+LABELS = ["Tone", "Clear ask", "Professionalism", "Respectfulness", "Sarcasm", "Accuracy"]
 
 
 def test_checking_panel_is_replaced_with_one_row_per_result(monkeypatch):
@@ -240,6 +242,7 @@ def test_checking_panel_is_replaced_with_one_row_per_result(monkeypatch):
             "unprofessional": 0.2,
             "impolite": 0.0,
             "sarcasm": 0.3,
+            "accuracy": 0.05,
         },
     )
     monkeypatch.setattr(watch_loop.stats, "record_check", lambda *_args, **_kwargs: None)
@@ -254,6 +257,7 @@ def test_checking_panel_is_replaced_with_one_row_per_result(monkeypatch):
         ("Professionalism", False, "This might read as unprofessional.", "warning", [0.2]),
         ("Respectfulness", False, "This might read as impolite or disrespectful.", "error", [0.0]),
         ("Sarcasm", False, "This might read as sarcastic or mocking.", "error", [0.3]),
+        ("Accuracy", False, "This might state something that isn't true.", "warning", [0.05]),
     ]
     assert [name for name, _ms in columns] == ["Jev"]
     assert isinstance(columns[0][1], int)
@@ -298,6 +302,7 @@ def test_both_providers_run_in_parallel_with_one_column_each(monkeypatch):
         "unprofessional": "warning",
         "impolite": "error",
         "sarcasm": "error",
+        "accuracy": "warning",
     }]
 
 

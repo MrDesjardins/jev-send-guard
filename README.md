@@ -4,10 +4,13 @@ A small background agent that watches whatever text field currently has OS
 focus — but only in an explicit allowlist of apps you configure — and,
 after you stop typing for about a second, runs fast `noul` questions
 against [TypeSafe AI's Jev model](https://docs.typesafe.ai) on the current
-draft. Six questions ship built in (curt/blunt, missing a clear ask,
-unprofessional, impolite, sarcasm, and — when the conversation above the
-text box can be read — whether the reply answers what was asked) and are
-fully editable — or you can add your own — from the tray's Settings window. A small popup appears anchored right
+draft. Seven questions ship built in (curt/blunt, missing a clear ask,
+unprofessional, impolite, sarcasm, a clearly false factual claim, and —
+when the conversation above the text box can be read — whether the reply
+answers what was asked) and are fully editable — or you can add your own
+— from the tray's Settings window. The accuracy check only judges widely
+known general facts — never private matters like your schedule or
+systems, or anything that would need looking up. A small popup appears anchored right
 next to the field: red for an error-severity concern (curt, missing ask,
 impolite, sarcasm by default), yellow for a warning (unprofessional by default),
 green with a checkmark if it's clean. It never blocks anything — there's no
