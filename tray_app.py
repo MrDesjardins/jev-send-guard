@@ -18,11 +18,10 @@ import sys
 import threading
 from pathlib import Path
 
-from core import api_key as api_key_store
 from core import config
 from core import icon as icon_gen
 from core.logging_setup import setup_logging
-from core.watch_loop import run as run_watch_loop
+from core.watch_loop import has_api_key, run as run_watch_loop
 
 log = setup_logging()
 
@@ -48,7 +47,7 @@ def start_watch_thread():
         while not stop_event.is_set():
             if not config.list_apps():
                 reason = "No apps are being watched. Add one from the tray Settings."
-            elif not api_key_store.get_api_key():
+            elif not has_api_key():
                 reason = "No API key set. Set one from the tray Settings."
             else:
                 reason = None

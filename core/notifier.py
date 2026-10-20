@@ -44,10 +44,11 @@ import tkinter as tk
 
 log = logging.getLogger("jev-send-guard")
 
-# The progress/result card has one labelled row per check.  Give their concise
-# verdicts enough room to stay on one line rather than truncating them at the
-# editor's edge.
-WIDTH = 380
+# The progress/result card has one labelled row per check, plus one score
+# column per provider.  Give their concise verdicts enough room to stay on
+# one line rather than truncating them at the editor's edge.
+WIDTH = 440
+SCORE_COLUMN_WIDTH = 70
 ACCENT_WIDTH = 5
 SCREEN_MARGIN = 16
 BG = "#26282b"  # a slightly lifted "card" surface, not flat black
@@ -137,6 +138,24 @@ def _row(parent, icon_char, text, color, font_size=9, bold=False):
     ).pack(side="left", fill="x", expand=True, padx=(6, 0))
 
 
+def _join_names(provider_names):
+    return " + ".join(provider_names)
+
+
+def _pct(score):
+    return "—" if score is None else f"{round(score * 100)}%"
+
+
+def _score_color(score, severity):
+    from core.jev_client import is_concern
+
+    if score is None:
+        return CHECKING_GRAY
+    if is_concern(score):
+        return _SEVERITY_STYLE.get(severity, _SEVERITY_STYLE["warning"])["color"]
+    return OK_GREEN
+
+
 def _build_concerns(items):
     """items: list of (message: str, severity: "error" | "warning"). The
     popup's title reflects the worst severity present; each bullet is
@@ -189,23 +208,30 @@ def _build_ok():
     return build
 
 
-def _build_checking(labels):
-    """A fixed-size progress panel, shown while one batched Jev call runs."""
+def _build_checking(labels, provider_names):
+    """A fixed-size progress panel, shown while the provider call(s) run."""
     def build(frame, _dismiss):
         content = _build_card(frame, CHECKING_GRAY)
-        _row(content, "◌", "Jev is checking your draft", CHECKING_GRAY, font_size=10, bold=True)
+        verb = "is" if len(provider_names) == 1 else "are"
+        _row(
+            content, "◌", f"{_join_names(provider_names)} {verb} checking your draft",
+            CHECKING_GRAY, font_size=10, bold=True,
+        )
         for label in labels:
             _row(content, "◌", f"{label}: Checking…", CHECKING_GRAY)
 
     return build
 
 
-def _build_results(rows):
+def _build_results(rows, columns):
     """Render every check in a stable layout after a progress panel.
 
-    Each row is ``(label, concern, message, severity)``.  Keeping the same
-    title-plus-one-row-per-question layout as `_build_checking` makes the
-    transition legible rather than a sequence of popups that move or grow.
+    Each row is ``(label, concern, message, severity, scores)``, ``scores``
+    holding one probability (or None) per provider; ``columns`` is one
+    ``(provider_name, elapsed_ms or None if it failed)`` per provider.
+    Keeping the same title-plus-one-row-per-question layout as
+    `_build_checking` makes the transition legible rather than a sequence of
+    popups that move or grow.
     """
     def build(frame, _dismiss):
         flagged = [row for row in rows if row[1]]
@@ -214,20 +240,50 @@ def _build_results(rows):
             _SEVERITY_STYLE[overall]["color"] if flagged else OK_GREEN
         )
         content = _build_card(frame, accent)
-        title = "Before you send — Jev noticed:" if flagged else "Jev checked your draft"
+        names = _join_names([name for name, _ms in columns])
+        title = f"Before you send — {names} noticed:" if flagged else f"{names} checked your draft"
         title_icon = _SEVERITY_STYLE[overall]["icon"] if flagged else "✓"
         _row(content, title_icon, title, accent, font_size=10, bold=True)
-        for label, concern, message, severity in rows:
+
+        table = tk.Frame(content, bg=BG)
+        table.pack(fill="x")
+        table.columnconfigure(1, weight=1)
+        for col, (name, elapsed_ms) in enumerate(columns):
+            timing = "failed" if elapsed_ms is None else f"{elapsed_ms} ms"
+            tk.Label(
+                table, text=f"{name}\n{timing}", fg=CHECKING_GRAY, bg=BG,
+                font=("Segoe UI", 8), justify="right",
+            ).grid(row=0, column=2 + col, sticky="e", padx=(10, 0), pady=(0, 4))
+
+        text_wrap = WIDTH - ACCENT_WIDTH - 28 - 26 - SCORE_COLUMN_WIDTH * len(columns)
+        for index, (label, concern, message, severity, scores) in enumerate(rows, start=1):
             if concern:
                 style = _SEVERITY_STYLE.get(severity, _SEVERITY_STYLE["warning"])
-                _row(content, style["icon"], f"{label}: {message}", style["color"])
+                icon_char, color, text = style["icon"], style["color"], f"{label}: {message}"
             else:
-                _row(content, "✓", f"{label}: Looks good", OK_GREEN)
+                icon_char, color, text = "✓", OK_GREEN, f"{label}: Looks good"
+            tk.Label(table, text=icon_char, fg=color, bg=BG, font=("Segoe UI", 13)).grid(
+                row=index, column=0, sticky="nw"
+            )
+            tk.Label(
+                table, text=text, fg=color, bg=BG, font=("Segoe UI", 9),
+                anchor="w", justify="left", wraplength=text_wrap,
+            ).grid(row=index, column=1, sticky="w", padx=(6, 0), pady=(0, 5))
+            for col, score in enumerate(scores):
+                tk.Label(
+                    table, text=_pct(score), fg=_score_color(score, severity), bg=BG,
+                    font=("Segoe UI", 9, "bold"),
+                ).grid(row=index, column=2 + col, sticky="ne", padx=(10, 0))
+
+        tk.Label(
+            content, text="% = how likely the issue is present", fg=CHECKING_GRAY, bg=BG,
+            font=("Segoe UI", 8),
+        ).pack(anchor="e", pady=(2, 0))
 
     return build
 
 
-def _build_unavailable(labels):
+def _build_unavailable(labels, provider_names):
     """Explain that a batch timed out instead of silently removing progress."""
     def build(frame, _dismiss):
         style = _SEVERITY_STYLE["warning"]
@@ -235,7 +291,7 @@ def _build_unavailable(labels):
         _row(
             content,
             style["icon"],
-            "Jev couldn't finish checking",
+            f"{_join_names(provider_names)} couldn't finish checking",
             style["color"],
             font_size=10,
             bold=True,
@@ -445,34 +501,51 @@ def notify(items, anchor_rect=None):
         _enqueue(_build_concerns(items), anchor_rect, 8000)
 
 
-def notify_checking(labels, anchor_rect=None):
+def notify_checking(labels, anchor_rect=None, provider_names=("Jev",)):
     """Show immediate, neutral progress for every question in a batch."""
+    provider_names = list(provider_names)
     if sys.platform == "darwin":
-        _show_macos_panel("checking", labels, anchor_rect, 10000)
+        _show_macos_panel(
+            "checking", {"labels": labels, "providers": provider_names}, anchor_rect, 10000
+        )
     else:
-        _enqueue(_build_checking(labels), anchor_rect, 10000)
+        _enqueue(_build_checking(labels, provider_names), anchor_rect, 10000)
 
 
-def notify_results(rows, anchor_rect=None):
-    """Replace the progress panel with the complete, stable batch result."""
+def notify_results(rows, columns, anchor_rect=None):
+    """Replace the progress panel with the complete, stable batch result.
+
+    See `_build_results` for the shape of ``rows`` and ``columns``."""
     if sys.platform == "darwin":
         # JSON turns tuples into lists, which notification_app.py handles
         # identically.  Use dictionaries here so the payload stays explicit.
-        payload_rows = [
-            {"label": label, "concern": concern, "message": message, "severity": severity}
-            for label, concern, message, severity in rows
-        ]
-        _show_macos_panel("results", payload_rows, anchor_rect, 6000)
+        payload = {
+            "columns": [{"name": name, "ms": ms} for name, ms in columns],
+            "rows": [
+                {
+                    "label": label,
+                    "concern": concern,
+                    "message": message,
+                    "severity": severity,
+                    "scores": list(scores),
+                }
+                for label, concern, message, severity, scores in rows
+            ],
+        }
+        _show_macos_panel("results", payload, anchor_rect, 8000)
     else:
-        _enqueue(_build_results(rows), anchor_rect, 6000)
+        _enqueue(_build_results(rows, columns), anchor_rect, 8000)
 
 
-def notify_unavailable(labels, anchor_rect=None):
+def notify_unavailable(labels, anchor_rect=None, provider_names=("Jev",)):
     """Replace progress with an explicit, non-judgmental request failure."""
+    provider_names = list(provider_names)
     if sys.platform == "darwin":
-        _show_macos_panel("unavailable", labels, anchor_rect, 4500)
+        _show_macos_panel(
+            "unavailable", {"labels": labels, "providers": provider_names}, anchor_rect, 4500
+        )
     else:
-        _enqueue(_build_unavailable(labels), anchor_rect, 4500)
+        _enqueue(_build_unavailable(labels, provider_names), anchor_rect, 4500)
 
 
 def notify_service_issue(message, anchor_rect=None):

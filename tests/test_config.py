@@ -199,3 +199,22 @@ def test_invalid_idle_seconds_in_file_falls_back_to_default():
     assert config.get_idle_seconds() == config.DEFAULT_IDLE_SECONDS
     config.CONFIG_PATH.write_text("idle_seconds = 500\n", encoding="utf-8")
     assert config.get_idle_seconds() == config.DEFAULT_IDLE_SECONDS
+
+
+def test_provider_defaults_to_jev_and_round_trips():
+    assert config.get_provider() == "jev"
+    assert config.get_providers() == ["jev"]
+    config.set_provider("both")
+    assert config.get_provider() == "both"
+    assert config.get_providers() == ["jev", "mercury"]
+    config.set_provider("mercury")
+    assert config.get_providers() == ["mercury"]
+
+
+def test_invalid_provider_is_rejected_and_ignored_on_read():
+    import pytest
+
+    with pytest.raises(ValueError):
+        config.set_provider("gpt")
+    config.save_config({"apps": [], "provider": "nonsense"})
+    assert config.get_provider() == "jev"

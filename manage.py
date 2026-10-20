@@ -83,11 +83,12 @@ def cmd_list(args):
 
 
 def cmd_set_key(args):
-    value = getpass.getpass("TypeSafe API key (input hidden): ").strip()
+    service = "Inception (Mercury)" if args.provider == "mercury" else "TypeSafe (Jev)"
+    value = getpass.getpass(f"{service} API key (input hidden): ").strip()
     if not value:
         print("No key entered, nothing saved.")
         return 1
-    api_key_store.set_api_key(value)
+    api_key_store.set_api_key(value, provider=args.provider)
     print("Saved to the OS credential store.")
     return 0
 
@@ -107,7 +108,12 @@ def main():
 
     subparsers.add_parser("add", help="Register a new app to watch").set_defaults(func=cmd_add)
     subparsers.add_parser("list", help="List watched apps").set_defaults(func=cmd_list)
-    subparsers.add_parser("set-key", help="Store the TypeSafe API key in the OS credential store").set_defaults(func=cmd_set_key)
+    set_key_parser = subparsers.add_parser("set-key", help="Store an API key in the OS credential store")
+    set_key_parser.add_argument(
+        "--provider", choices=["jev", "mercury"], default="jev",
+        help="jev = TypeSafe key (default), mercury = Inception key",
+    )
+    set_key_parser.set_defaults(func=cmd_set_key)
 
     remove_parser = subparsers.add_parser("remove", help="Stop watching an app")
     remove_parser.add_argument("identifier", help="Label or process name to remove")

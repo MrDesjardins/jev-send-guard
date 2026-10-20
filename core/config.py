@@ -37,6 +37,11 @@ The typing-pause delay before a draft is sent to Jev is a top-level key
 
     idle_seconds = 0.6
 
+Which model evaluates drafts is also top-level (omitted = "jev"); "both"
+calls Jev and Mercury in parallel and shows each one's score and latency:
+
+    provider = "both"
+
 `questions` holds *overrides* on the built-in questions defined in
 core/jev_client.py's QUESTIONS (edit wording/severity/enabled without
 touching the code defaults — "Reset to default" just deletes the entry
@@ -313,6 +318,32 @@ def reset_idle_seconds():
     if "idle_seconds" in config:
         del config["idle_seconds"]
         save_config(config)
+
+
+PROVIDER_CHOICES = ("jev", "mercury", "both")
+DEFAULT_PROVIDER = "jev"
+
+
+def get_provider(config=None):
+    """The configured provider choice: one of PROVIDER_CHOICES. Falls back
+    to the default for a missing or unrecognized value instead of raising."""
+    config = config if config is not None else load_config()
+    value = config.get("provider")
+    return value if value in PROVIDER_CHOICES else DEFAULT_PROVIDER
+
+
+def get_providers(config=None):
+    """The concrete backends (core/jev_client.py's PROVIDERS keys) to call."""
+    choice = get_provider(config)
+    return ["jev", "mercury"] if choice == "both" else [choice]
+
+
+def set_provider(value):
+    if value not in PROVIDER_CHOICES:
+        raise ValueError(f"provider must be one of {PROVIDER_CHOICES}")
+    config = load_config()
+    config["provider"] = value
+    save_config(config)
 
 
 def get_question_overrides():

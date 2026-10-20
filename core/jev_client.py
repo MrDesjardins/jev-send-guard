@@ -1,5 +1,7 @@
-"""Calls TypeSafe AI's Jev model with `noul` questions on the draft
-text. Fails OPEN on any error (network, auth, timeout, bad response) — a
+"""Calls TypeSafe AI's Jev model — or Inception's Mercury Decide, which
+speaks the same `noul` decisions protocol — with `noul` questions on the
+draft text. Which one (or both, in parallel) is a Settings choice; see
+core/config.py's get_provider() and PROVIDERS below. Fails OPEN on any error (network, auth, timeout, bad response) — a
 broken API call must never be the reason a nudge doesn't happen, but more
 importantly must never be the reason the tool feels unreliable or slows
 anything down. Originally ported from jevClient.js (curt/missing_ask);
@@ -26,13 +28,23 @@ log = logging.getLogger("jev-send-guard")
 
 API_URL = "https://api.typesafe.ai/v1/systemone"
 MODEL = "jev-latest"
+# Both backends take the same request body and return the same
+# `answers[key].noul` probability, so only the endpoint and model differ.
+# Inception's /v1/decisions endpoint only serves `mercury-decide` (their
+# chat models like `mercury-3` are chat-completions only).
+PROVIDERS = {
+    "jev": {"label": "Jev", "url": API_URL, "model": MODEL},
+    "mercury": {
+        "label": "Mercury",
+        "url": "https://api.inceptionlabs.ai/v1/decisions",
+        "model": "mercury-decide",
+    },
+}
 TIMEOUT_SEC = 4.0
 # Fires the nudge only when Jev is fairly confident, not on a coin flip —
 # precision matters more than recall here, since a wrong nudge erodes trust
 # fast.
 NOUL_THRESHOLD = 0.7
-
-_HOSTNAME = urlparse(API_URL).hostname
 
 _client_lock = threading.Lock()
 _client = None
@@ -242,9 +254,17 @@ def get_active_questions(disabled_keys=None):
     }
 
 
-def _build_body(draft_text, questions):
+def provider_label(provider):
+    return PROVIDERS[provider]["label"]
+
+
+def is_concern(score):
+    return score is not None and score >= NOUL_THRESHOLD
+
+
+def _build_body(draft_text, questions, model=MODEL):
     return {
-        "model": MODEL,
+        "model": model,
         "state": {"draft": draft_text},
         "questions": {
             key: {
@@ -257,11 +277,13 @@ def _build_body(draft_text, questions):
     }
 
 
-def check_draft(api_key, draft_text, disabled_keys=None, questions=None):
-    """Returns a dict of {question_key: bool} (true = concern flagged) for
-    every enabled, not-per-app-disabled question, or None ("no signal,
-    treat as no concerns") on any failure. `disabled_keys` is the current
-    app's per-app overrides (core/config.py's disabled_questions)."""
+def check_draft(api_key, draft_text, disabled_keys=None, questions=None, provider="jev"):
+    """Returns a dict of {question_key: probability 0..1 that the concern
+    applies} for every enabled, not-per-app-disabled question, or None ("no
+    signal, treat as no concerns") on any failure. Use is_concern() to turn
+    a probability into a flag. `disabled_keys` is the current app's per-app
+    overrides (core/config.py's disabled_questions); `provider` is a
+    PROVIDERS key."""
     if not api_key:
         return None
 
@@ -275,9 +297,11 @@ def check_draft(api_key, draft_text, disabled_keys=None, questions=None):
 
     import httpx  # cheap after the first real call — see _get_client()
 
+    backend = PROVIDERS[provider]
+    name = backend["label"]
     dns_start = time.monotonic()
     try:
-        socket.getaddrinfo(_HOSTNAME, 443)
+        socket.getaddrinfo(urlparse(backend["url"]).hostname, 443)
         log.debug("DNS resolution took %.2fs", time.monotonic() - dns_start)
     except Exception as e:
         log.warning("DNS resolution diagnostic failed (%.2fs): %s", time.monotonic() - dns_start, e)
@@ -285,40 +309,40 @@ def check_draft(api_key, draft_text, disabled_keys=None, questions=None):
     start = time.monotonic()
     try:
         response = _get_client().post(
-            API_URL,
+            backend["url"],
             headers={
                 "Authorization": f"Bearer {api_key}",
                 "Content-Type": "application/json",
             },
-            json=_build_body(draft_text, active_questions),
+            json=_build_body(draft_text, active_questions, backend["model"]),
             timeout=TIMEOUT_SEC,
         )
     except httpx.HTTPError as e:
         elapsed = time.monotonic() - start
         log.warning(
-            "request failed after %.1fs (%s), failing open: %s",
-            elapsed, type(e).__name__, e,
+            "%s request failed after %.1fs (%s), failing open: %s",
+            name, elapsed, type(e).__name__, e,
         )
         return None
 
     elapsed = time.monotonic() - start
-    log.debug("Jev call took %.1fs, status=%s", elapsed, response.status_code)
+    log.debug("%s call took %.1fs, status=%s", name, elapsed, response.status_code)
     if elapsed > TIMEOUT_SEC * 1.5:
         log.warning(
-            "Jev call took %.1fs, well over the %.0fs timeout setting — "
+            "%s call took %.1fs, well over the %.0fs timeout setting — "
             "likely OS-level TLS/proxy overhead outside httpx's control, "
             "not the API itself. Worth a second look if this persists.",
-            elapsed, TIMEOUT_SEC,
+            name, elapsed, TIMEOUT_SEC,
         )
 
     if response.status_code != 200:
-        log.warning("non-OK response (%s), failing open", response.status_code)
+        log.warning("%s non-OK response (%s), failing open", name, response.status_code)
         return None
 
     try:
         payload = response.json()
     except ValueError as e:
-        log.warning("invalid JSON, failing open: %s", e)
+        log.warning("%s invalid JSON, failing open: %s", name, e)
         return None
 
     answers = payload.get("answers") if payload else None
@@ -328,6 +352,5 @@ def check_draft(api_key, draft_text, disabled_keys=None, questions=None):
     result = {}
     for key in active_questions:
         score = (answers.get(key) or {}).get("noul")
-        score = score if isinstance(score, (int, float)) else 0
-        result[key] = score >= NOUL_THRESHOLD
+        result[key] = float(score) if isinstance(score, (int, float)) else 0.0
     return result

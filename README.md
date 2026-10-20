@@ -65,7 +65,8 @@ Click the icon for:
   run for a specific app, configure the checks themselves (wording,
   severity, on/off) globally, set the delay before a draft is checked
   (how long you must pause typing; 0.3–10s, default 0.6s, applied live),
-  set the API key, and see local usage stats
+  pick the model (Jev, Mercury, or Both — see below), set the API
+  keys, and see local usage stats
   (how many checks ran, how many were flagged, broken down by check).
   Nothing is watched until you add at least one app; the default allowlist
   is empty.
@@ -122,11 +123,38 @@ title, path, or query string is read for this purpose. If host detection is
 unavailable or denied, browser checks stay disabled rather than falling back
 to app-wide monitoring.
 
+### Choosing a model: Jev, Mercury, or Both
+
+Settings → **Model** picks which backend scores drafts:
+
+- **Jev**: TypeSafe AI's `jev-latest` (`https://api.typesafe.ai/v1/systemone`).
+- **Mercury**: Inception's `mercury-decide` via
+  [`/v1/decisions`](https://docs.inceptionlabs.ai/api-reference/decisions/create-a-decision).
+  Inception's decisions endpoint only serves `mercury-decide`; their chat
+  models such as `mercury-3` don't support it.
+- **Both**: calls the two in parallel. A check is flagged when either one
+  is at least 70% sure.
+
+The result popup shows each model's score as a percentage (how likely the
+issue is present), one column per model, with that model's response time
+in ms in the column header. If one model fails in Both mode, its column
+shows "failed" and the other model's results still appear.
+
+Each model needs its own key. Set them in Settings (stored in the OS
+credential store), or put them in a `.env` file at the repo root. A `.env`
+value takes precedence and is never committed (`*.env` is gitignored):
+
+```bash
+TYPESAFE_API_KEY=...    # Jev
+INCEPTION_API_KEY=...   # Mercury
+```
+
 A headless/console alternative also exists, for scripting or if you'd
 rather not have a tray icon:
 
 ```bash
-uv run manage.py set-key
+uv run manage.py set-key                      # TypeSafe (Jev) key
+uv run manage.py set-key --provider mercury   # Inception (Mercury) key
 uv run manage.py add        # interactive: switch to the target app, type a couple of words
 uv run manage.py list
 uv run manage.py remove "Discord messages"

@@ -12,6 +12,7 @@ without restarting the loop.
 import sys
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 
 from core import api_key as api_key_store
 from core import config
@@ -61,11 +62,12 @@ def run(stop_event, pause_event=None, backend=None):
         log.error("No apps are being watched. Add one from the tray Settings, or `manage.py add`.")
         return 1
 
-    key = api_key_store.get_api_key()
-    if not key:
+    if not has_api_key():
         log.error(
-            "No API key set. Set one from the tray Settings, or `manage.py set-key` "
-            "(or set TYPESAFE_API_KEY for local testing)."
+            "No API key set for %s. Set one from the tray Settings, or `manage.py set-key` "
+            "(or set %s in .env for local testing).",
+            config.get_provider(),
+            " / ".join(api_key_store.env_var_for(p) for p in config.get_providers()),
         )
         return 1
 
@@ -80,6 +82,7 @@ def run(stop_event, pause_event=None, backend=None):
 
     idle_watcher = IdleWatcher(idle_seconds=config.get_idle_seconds())
     log.info("Delay before checking: %.2fs", idle_watcher.idle_seconds)
+    log.info("Provider: %s", config.get_provider())
     last_runtime_id = None
     last_logged_text = object()  # sentinel, never equal to a real text value
     last_evaluated_signature = None
@@ -227,7 +230,7 @@ def run(stop_event, pause_event=None, backend=None):
 
             threading.Thread(
                 target=handle_draft,
-                args=(due_text, key, anchor_rect, disabled_questions),
+                args=(due_text, anchor_rect, disabled_questions),
                 kwargs={"is_current": is_current},
                 daemon=True,
                 name="jev-draft-check",
@@ -240,7 +243,26 @@ def run(stop_event, pause_event=None, backend=None):
     return 0
 
 
-def handle_draft(text, key, anchor_rect=None, disabled_questions=None, is_current=None):
+def has_api_key(current_config=None):
+    """Whether at least one of the configured providers has a key."""
+    return any(api_key_store.get_api_key(p) for p in config.get_providers(current_config))
+
+
+def _timed_check(provider, text, questions):
+    """Run one provider's check. Returns (scores or None, elapsed ms)."""
+    key = api_key_store.get_api_key(provider)
+    if not key:
+        log.warning(
+            "no %s API key (set it in Settings or %s), skipping it",
+            jev_client.provider_label(provider), api_key_store.env_var_for(provider),
+        )
+        return None, None
+    start = time.perf_counter()
+    scores = jev_client.check_draft(key, text, questions=questions, provider=provider)
+    return scores, round((time.perf_counter() - start) * 1000)
+
+
+def handle_draft(text, anchor_rect=None, disabled_questions=None, is_current=None):
     """Evaluate one draft and notify only if it is still the current one.
 
     ``is_current`` is supplied by ``run`` for asynchronous evaluations.  It
@@ -258,44 +280,64 @@ def handle_draft(text, key, anchor_rect=None, disabled_questions=None, is_curren
     if not is_current():
         return
 
+    providers = config.get_providers()
+    provider_names = [jev_client.provider_label(p) for p in providers]
     labels = [
         jev_client.label_for(question_key, question)
         for question_key, question in active_questions.items()
     ]
-    notifier.notify_checking(labels, anchor_rect)
+    notifier.notify_checking(labels, anchor_rect, provider_names)
 
-    log.debug("calling Jev batch...")
-    result = jev_client.check_draft(key, text, questions=active_questions)
+    log.debug("calling %s...", " + ".join(provider_names))
+    # "both" runs the providers side by side, so the popup waits for the
+    # slower one rather than the sum of the two.
+    with ThreadPoolExecutor(max_workers=len(providers)) as pool:
+        futures = [pool.submit(_timed_check, p, text, active_questions) for p in providers]
+        outcomes = [future.result() for future in futures]
     if not is_current():
-        log.info("discarding stale Jev result")
+        log.info("discarding stale result")
         return
-    log.info("Jev result: %s", result)
+    for name, (scores, elapsed_ms) in zip(provider_names, outcomes):
+        log.info("%s result (%s ms): %s", name, elapsed_ms, scores)
 
-    if result is None:
-        log.info("Jev call failed, showing unavailable state without a verdict")
-        notifier.notify_unavailable(labels, anchor_rect)
-        issue = status_client.get_api_issue()
-        if issue and is_current():
-            log.warning("TypeSafe status page reports: %s", issue)
-            notifier.notify_service_issue(issue, anchor_rect)
+    if all(scores is None for scores, _ms in outcomes):
+        log.info("every provider call failed, showing unavailable state without a verdict")
+        notifier.notify_unavailable(labels, anchor_rect, provider_names)
+        if "jev" in providers:
+            issue = status_client.get_api_issue()
+            if issue and is_current():
+                log.warning("TypeSafe status page reports: %s", issue)
+                notifier.notify_service_issue(issue, anchor_rect)
         return
 
-    flagged = [q_key for q_key, concern in result.items() if concern]
+    # A question is flagged when any provider that answered is confident
+    # enough; each provider's own score is still shown side by side.
+    rows = []
+    flagged = []
+    for question_key, question in active_questions.items():
+        question_scores = [
+            None if scores is None else scores.get(question_key) for scores, _ms in outcomes
+        ]
+        concern = any(jev_client.is_concern(score) for score in question_scores)
+        if concern:
+            flagged.append(question_key)
+        rows.append((
+            jev_client.label_for(question_key, question),
+            concern,
+            question["message"],
+            question["severity"],
+            question_scores,
+        ))
+    columns = [
+        (name, elapsed_ms if scores is not None else None)
+        for name, (scores, elapsed_ms) in zip(provider_names, outcomes)
+    ]
     # Do not count or display an answer for a draft which changed while the
     # request was completing.
     if not is_current():
-        log.info("discarding stale Jev result")
+        log.info("discarding stale result")
         return
     stats.record_check(flagged)
 
-    rows = [
-        (
-            jev_client.label_for(question_key, active_questions[question_key]),
-            concern,
-            active_questions[question_key]["message"],
-            active_questions[question_key]["severity"],
-        )
-        for question_key, concern in result.items()
-    ]
-    log.info("notifying results: %s (anchor_rect=%s)", rows, anchor_rect)
-    notifier.notify_results(rows, anchor_rect)
+    log.info("notifying results: %s %s (anchor_rect=%s)", columns, rows, anchor_rect)
+    notifier.notify_results(rows, columns, anchor_rect)

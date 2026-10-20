@@ -113,7 +113,7 @@ def test_custom_question_is_included_in_the_request_and_scored(monkeypatch):
         disabled_keys={"curt", "missing_ask", "unprofessional", "impolite", "sarcasm"},
     )
     assert captured["questions"] == {"overpromising"}
-    assert result == {"overpromising": True}
+    assert result == {"overpromising": 0.9}
 
 
 def test_no_api_key_returns_none():
@@ -157,7 +157,7 @@ def test_disabled_keys_param_excludes_that_question_from_the_request(monkeypatch
 
     assert "unprofessional" not in captured["questions"]
     assert captured["questions"] == {"curt", "missing_ask", "impolite", "sarcasm"}
-    assert result == {"curt": True, "missing_ask": False, "impolite": True, "sarcasm": False}
+    assert result == {"curt": 0.9, "missing_ask": 0.1, "impolite": 0.9, "sarcasm": 0.2}
 
 
 def test_fails_open_on_http_error(monkeypatch):
@@ -190,7 +190,13 @@ def test_fails_open_on_missing_answers(monkeypatch):
     assert jev_client.check_draft("fake-key", "some text") is None
 
 
-def test_score_below_threshold_is_not_flagged(monkeypatch):
+def test_threshold_decides_concern():
+    assert jev_client.is_concern(0.69) is False
+    assert jev_client.is_concern(0.7) is True
+    assert jev_client.is_concern(None) is False
+
+
+def test_missing_answer_scores_zero(monkeypatch):
     class FakeResponse:
         status_code = 200
 
@@ -200,6 +206,33 @@ def test_score_below_threshold_is_not_flagged(monkeypatch):
     monkeypatch.setattr(jev_client._get_client(), "post", lambda *a, **k: FakeResponse())
     result = jev_client.check_draft(
         "fake-key", "some text",
-        disabled_keys={"missing_ask", "unprofessional", "impolite", "sarcasm"},
+        disabled_keys={"unprofessional", "impolite", "sarcasm"},
     )
-    assert result == {"curt": False}
+    assert result == {"curt": 0.69, "missing_ask": 0.0}
+
+
+def test_mercury_provider_uses_inception_endpoint_and_model(monkeypatch):
+    captured = {}
+
+    class FakeResponse:
+        status_code = 200
+
+        def json(self):
+            return {"answers": {"curt": {"type": "noul", "noul": 0.97}}}
+
+    def fake_post(url, headers, json, timeout):
+        captured.update(url=url, auth=headers["Authorization"], model=json["model"])
+        return FakeResponse()
+
+    monkeypatch.setattr(jev_client._get_client(), "post", fake_post)
+    result = jev_client.check_draft(
+        "inception-key", "some text",
+        disabled_keys={"missing_ask", "unprofessional", "impolite", "sarcasm"},
+        provider="mercury",
+    )
+    assert captured == {
+        "url": "https://api.inceptionlabs.ai/v1/decisions",
+        "auth": "Bearer inception-key",
+        "model": "mercury-decide",
+    }
+    assert result == {"curt": 0.97}

@@ -8,6 +8,7 @@ NSPanel doesn't exist outside AppKit).
 """
 
 import json
+import math
 import sys
 
 import AppKit
@@ -21,8 +22,13 @@ log = setup_logging()
 
 
 # Keep in sync with core/notifier.py: the Windows and native macOS cards use
-# the same roomy, one-line-per-check layout.
-WIDTH = 380
+# the same roomy, one-line-per-check layout, plus one score column per
+# provider.
+WIDTH = 440
+SCORE_COLUMN_WIDTH = 70
+# Keep in sync with core/jev_client.py's NOUL_THRESHOLD (this helper runs as
+# its own small process and deliberately imports nothing heavy from core).
+NOUL_THRESHOLD = 0.7
 MARGIN = 14
 ACCENT_WIDTH = 5
 ICON_COLUMN_WIDTH = 22
@@ -123,6 +129,31 @@ def _row(content, icon, text, color, y, height=22, bold=False):
     )
 
 
+def _line_count(text, width, font_size=12):
+    """Rough wrap estimate: NSTextField won't grow, so each row's frame
+    must be tall enough up front for its wrapped text."""
+    chars_per_line = max(1, int(width / (font_size * 0.55)))
+    return max(1, math.ceil(len(text) / chars_per_line))
+
+
+def _pct(score):
+    return "—" if score is None else f"{round(score * 100)}%"
+
+
+def _results_layout(payload):
+    """Return (rows with their heights, total panel height) for "results"."""
+    columns = payload["columns"]
+    text_x = MARGIN + ICON_COLUMN_WIDTH + 6
+    text_width = WIDTH - text_x - MARGIN - SCORE_COLUMN_WIDTH * len(columns)
+    laid_out = []
+    for item in payload["rows"]:
+        text = f"{item['label']}: {item['message']}" if item["concern"] else f"{item['label']}: Looks good"
+        laid_out.append((item, text, _line_count(text, text_width) * 16 + 8))
+    # title + provider header + rows + footer caption + padding
+    height = 34 + 32 + sum(row_height for *_rest, row_height in laid_out) + 18 + 8
+    return laid_out, text_width, height
+
+
 def _apply_card_style(panel, accent_color):
     """Rounded corners + native drop shadow via a layer-backed content
     view, with a colored accent bar down the left edge. Best-effort and
@@ -156,8 +187,14 @@ def show(payload):
 
     kind = payload["kind"]
     items = payload["items"]
-    lines = 1 if kind == "ok" else max(1, len(items) + 1)
-    height = 34 + lines * 28
+    if kind == "results":
+        result_rows, text_width, height = _results_layout(items)
+    else:
+        if kind in ("checking", "unavailable"):
+            lines = len(items["labels"]) + 1
+        else:
+            lines = 1 if kind == "ok" else max(1, len(items) + 1)
+        height = 34 + lines * 28
     style = AppKit.NSBorderlessWindowMask | AppKit.NSNonactivatingPanelMask
     panel = PassivePanel.alloc().initWithContentRect_styleMask_backing_defer_(
         Foundation.NSMakeRect(0, 0, WIDTH, height),
@@ -181,7 +218,7 @@ def show(payload):
         overall_error = False
         overall_color = _color(*CHECKING_COLOR)
     elif kind == "results":
-        concerns = [item for item in items if item["concern"]]
+        concerns = [item for item in items["rows"] if item["concern"]]
         overall_error = any(item["severity"] == "error" for item in concerns)
         if not concerns:
             overall_color = _color(*OK_COLOR)
@@ -214,29 +251,57 @@ def show(payload):
         # version of this popup used for its single line of text.
         _row(content, "✓", "Looks good", overall_color, 18, bold=True)
     elif kind == "checking":
-        _row(content, "◌", "Jev is checking your draft", overall_color, height - 34, height=20, bold=True)
-        for index, label in enumerate(items):
+        names = " + ".join(items["providers"])
+        verb = "is" if len(items["providers"]) == 1 else "are"
+        _row(content, "◌", f"{names} {verb} checking your draft", overall_color, height - 34, height=20, bold=True)
+        for index, label in enumerate(items["labels"]):
             y = height - 62 - index * 28
             _row(content, "◌", f"{label}: Checking…", overall_color, y)
     elif kind == "results":
-        concerns = [item for item in items if item["concern"]]
-        title = "Before you send — Jev noticed:" if concerns else "Jev checked your draft"
+        columns = items["columns"]
+        names = " + ".join(column["name"] for column in columns)
+        title = f"Before you send — {names} noticed:" if concerns else f"{names} checked your draft"
         title_icon = "⛔" if overall_error else ("⚠" if concerns else "✓")
         _row(content, title_icon, title, overall_color, height - 34, height=20, bold=True)
-        for index, item in enumerate(items):
-            y = height - 62 - index * 28
+        gray = _color(*CHECKING_COLOR)
+
+        def column_x(col):
+            return WIDTH - MARGIN - SCORE_COLUMN_WIDTH * (len(columns) - col)
+
+        y = height - 34 - 32
+        for col, column in enumerate(columns):
+            timing = "failed" if column["ms"] is None else f"{column['ms']} ms"
+            header = _label(f"{column['name']}\n{timing}", gray, y, 30, x=column_x(col), width=SCORE_COLUMN_WIDTH, font_size=10)
+            header.setAlignment_(AppKit.NSTextAlignmentRight)
+            content.addSubview_(header)
+        text_x = MARGIN + ICON_COLUMN_WIDTH + 6
+        for item, text, row_height in result_rows:
+            y -= row_height
             if item["concern"]:
                 color = _color(*(ERROR_COLOR if item["severity"] == "error" else WARNING_COLOR))
                 icon = "⛔" if item["severity"] == "error" else "⚠"
-                text = f"{item['label']}: {item['message']}"
             else:
                 color = _color(*OK_COLOR)
                 icon = "✓"
-                text = f"{item['label']}: Looks good"
-            _row(content, icon, text, color, y)
+            content.addSubview_(_label(icon, color, y, row_height, x=MARGIN, width=ICON_COLUMN_WIDTH, font_size=15))
+            content.addSubview_(_label(text, color, y, row_height, x=text_x, width=text_width))
+            for col, score in enumerate(item["scores"]):
+                if score is None:
+                    score_color = gray
+                elif score >= NOUL_THRESHOLD:
+                    score_color = _color(*(ERROR_COLOR if item["severity"] == "error" else WARNING_COLOR))
+                else:
+                    score_color = _color(*OK_COLOR)
+                cell = _label(_pct(score), score_color, y, row_height, x=column_x(col), width=SCORE_COLUMN_WIDTH, bold=True)
+                cell.setAlignment_(AppKit.NSTextAlignmentRight)
+                content.addSubview_(cell)
+        caption = _label("% = how likely the issue is present", gray, 8, 16, font_size=10)
+        caption.setAlignment_(AppKit.NSTextAlignmentRight)
+        content.addSubview_(caption)
     elif kind == "unavailable":
-        _row(content, "⚠", "Jev couldn't finish checking", overall_color, height - 34, height=20, bold=True)
-        for index, label in enumerate(items):
+        names = " + ".join(items["providers"])
+        _row(content, "⚠", f"{names} couldn't finish checking", overall_color, height - 34, height=20, bold=True)
+        for index, label in enumerate(items["labels"]):
             y = height - 62 - index * 28
             _row(content, "—", f"{label}: Not checked", _color(*CHECKING_COLOR), y)
     elif kind == "service_issue":

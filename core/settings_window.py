@@ -287,7 +287,7 @@ def open_settings_window(on_change=None):
     root = tk.Tk()
     icon.set_window_icon(root)
     root.title("Jev Send Guard — Settings")
-    root.geometry("380x760")
+    root.geometry("380x940")
     root.minsize(380, 420)
     # Resizable, not fixed: this window has grown to six stacked sections
     # (watched apps, checks, API key, usage) and a fixed height risks
@@ -562,31 +562,70 @@ def open_settings_window(on_change=None):
     ).pack(anchor="w", padx=12, pady=(4, 0))
     delay_status_label.pack(anchor="w", padx=12)
 
-    tk.Label(root, text="TypeSafe API key", font=("Segoe UI", 10, "bold")).pack(
+    tk.Label(root, text="Model", font=("Segoe UI", 10, "bold")).pack(
         anchor="w", padx=12, pady=(16, 4)
     )
 
-    key_frame = tk.Frame(root)
-    key_frame.pack(fill="x", padx=12)
-    key_entry = tk.Entry(key_frame, show="•")
-    key_entry.pack(side="left", fill="x", expand=True)
+    provider_var = tk.StringVar(value=config.get_provider())
+    provider_status_var = tk.StringVar()
 
-    existing_key = api_key_store.get_api_key()
-    if existing_key:
-        key_entry.insert(0, existing_key)
+    def do_save_provider():
+        config.set_provider(provider_var.get())
+        provider_status_var.set("Saved.")
+        root.after(2000, lambda: provider_status_var.set(""))
+        if on_change:
+            on_change()
 
-    key_status_var = tk.StringVar()
+    provider_frame = tk.Frame(root)
+    provider_frame.pack(fill="x", padx=12)
+    for value, text in (("jev", "Jev"), ("mercury", "Mercury"), ("both", "Both")):
+        tk.Radiobutton(
+            provider_frame, text=text, value=value, variable=provider_var,
+            command=do_save_provider,
+        ).pack(side="left", padx=(0, 8))
+    tk.Label(
+        root,
+        text=(
+            "Both calls Jev (TypeSafe) and Mercury (Inception) in parallel and "
+            "shows each one's score and response time."
+        ),
+        fg="#5f6368",
+        wraplength=340,
+        justify="left",
+    ).pack(anchor="w", padx=12, pady=(4, 0))
+    tk.Label(root, textvariable=provider_status_var, fg="#81c995").pack(anchor="w", padx=12)
 
-    def do_save_key():
-        value = key_entry.get().strip()
-        if not value:
-            return
-        api_key_store.set_api_key(value)
-        key_status_var.set("Saved.")
-        root.after(2000, lambda: key_status_var.set(""))
+    def add_key_section(title, provider):
+        tk.Label(root, text=title, font=("Segoe UI", 10, "bold")).pack(
+            anchor="w", padx=12, pady=(16, 4)
+        )
 
-    tk.Button(key_frame, text="Save", command=do_save_key).pack(side="left", padx=(8, 0))
-    tk.Label(root, textvariable=key_status_var, fg="#81c995").pack(anchor="w", padx=12)
+        key_frame = tk.Frame(root)
+        key_frame.pack(fill="x", padx=12)
+        key_entry = tk.Entry(key_frame, show="•")
+        key_entry.pack(side="left", fill="x", expand=True)
+
+        existing_key = api_key_store.get_api_key(provider)
+        if existing_key:
+            key_entry.insert(0, existing_key)
+
+        key_status_var = tk.StringVar()
+
+        def do_save_key():
+            value = key_entry.get().strip()
+            if not value:
+                return
+            api_key_store.set_api_key(value, provider=provider)
+            key_status_var.set("Saved.")
+            root.after(2000, lambda: key_status_var.set(""))
+            if on_change:
+                on_change()
+
+        tk.Button(key_frame, text="Save", command=do_save_key).pack(side="left", padx=(8, 0))
+        tk.Label(root, textvariable=key_status_var, fg="#81c995").pack(anchor="w", padx=12)
+
+    add_key_section("TypeSafe API key (Jev)", "jev")
+    add_key_section("Inception API key (Mercury)", "mercury")
 
     tk.Label(root, text="Usage", font=("Segoe UI", 10, "bold")).pack(
         anchor="w", padx=12, pady=(16, 4)
