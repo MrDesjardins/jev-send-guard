@@ -80,6 +80,11 @@ except ImportError:
 ZERO_WIDTH_CHARS = "﻿​‌‍"
 POLL_INTERVAL_SEC = 0.3
 ADD_FLOW_TIMEOUT_SEC = 15
+# A text box taller than this share of its window is a document body, not a
+# draft. Fixed pixels don't work: Slack's composer grows with the draft, to
+# ~480 px (37% of a 1290 px window) for a long message.
+MAX_EDITOR_WINDOW_FRACTION = 0.6
+# Only when the window's size can't be read.
 MAX_EDITOR_HEIGHT = 400
 MIN_EDITOR_HEIGHT = 12
 # PyObjC does not export this constant in every ApplicationServices build.
@@ -300,9 +305,18 @@ def is_writable_text_control(control):
     rect = get_bounding_rect(control)
     if rect is not None:
         height = rect[3] - rect[1]
-        if height < MIN_EDITOR_HEIGHT or height > MAX_EDITOR_HEIGHT:
+        if height < MIN_EDITOR_HEIGHT or height > _max_editor_height(control):
             return False
     return True
+
+
+def _max_editor_height(control):
+    """The tallest a draft box can be: a share of its own window's height,
+    or the fixed fallback when the window can't be read."""
+    window_rect = get_bounding_rect(_get_attr(control, "AXWindow"))
+    if window_rect is None or window_rect[3] - window_rect[1] <= 0:
+        return MAX_EDITOR_HEIGHT
+    return (window_rect[3] - window_rect[1]) * MAX_EDITOR_WINDOW_FRACTION
 
 
 def get_bounding_rect(control):
