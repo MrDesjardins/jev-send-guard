@@ -74,8 +74,10 @@ Click the icon for:
   run for a specific app, configure the checks themselves (wording,
   severity, on/off) globally, set the delay before a draft is checked
   (how long you must pause typing; 0.3–10s, default 0.6s, applied live),
-  how long the results popup stays open (3–120s, default 15s; it still
-  closes as soon as you type again), whether conversation context is sent,
+  how long the results popup stays open (3–120s, default 15s; it stays up
+  while you keep typing so you can adjust the draft against it, is replaced
+  by the next result, and closes when you send or clear the message or
+  switch apps), whether conversation context is sent,
   pick the model (Jev, Mercury, or Both — see below), set the API
   keys, and see local usage stats
   (how many drafts came back good vs. raised a warning vs. an error,

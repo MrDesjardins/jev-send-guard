@@ -102,3 +102,34 @@ def test_failed_provider_shows_failed_and_dashes():
     assert view["headers"][0] == "Jev\nfailed"
     assert view["rows"][0]["cells"][0] == {"text": "—", "state": "none"}
     assert view["state"] == "ok"
+
+
+def test_recheck_keeps_the_previous_result_on_screen(monkeypatch):
+    """While a results card is up, a new check doesn't blank it with an
+    empty "checking" card or a half-filled one; the new result replaces it."""
+    shown = []
+    monkeypatch.setattr(notifier, "_show_table", lambda view, *_args: shown.append(view["state"]))
+    monkeypatch.setattr(notifier, "_results_dismiss_ms", lambda: 20000)
+    columns = [("Jev", 80), ("Mercury", 400)]
+
+    notifier.notify_checking(["Tone", "Sarcasm"], None, ["Jev", "Mercury"])
+    notifier.notify_results(ROWS, columns)
+    notifier.notify_checking(["Tone", "Sarcasm"], None, ["Jev", "Mercury"])
+    notifier.notify_progress(ROWS, [("Jev", 80), ("Mercury", None, True)])
+    notifier.notify_results(ROWS, columns)
+
+    assert shown == ["checking", "error", "error"]
+    assert notifier.result_on_screen()
+
+
+def test_dismissing_lets_the_next_check_show_progress_again(monkeypatch):
+    shown = []
+    monkeypatch.setattr(notifier, "_show_table", lambda view, *_args: shown.append(view["state"]))
+    monkeypatch.setattr(notifier, "_results_dismiss_ms", lambda: 20000)
+
+    notifier.notify_results(ROWS, [("Jev", 80), ("Mercury", 400)])
+    notifier.dismiss()
+    notifier.notify_checking(["Tone"], None, ["Jev"])
+
+    assert shown == ["error", "checking"]
+    assert not notifier.result_on_screen()
