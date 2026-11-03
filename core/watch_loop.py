@@ -87,16 +87,21 @@ def run(stop_event, pause_event=None, backend=None):
     last_runtime_id = None
     last_logged_text = object()  # sentinel, never equal to a real text value
     last_evaluated_signature = None
+    last_process_name = None
     was_watched = False
     had_focused_control = True
-    # A Jev request can take seconds.  Keep the watch loop responsive while
-    # one runs, and use this monotonically increasing generation to make its
-    # result invalid as soon as the draft or focus changes.
-    evaluation_generation = 0
+    # A model call can take seconds, so it runs off this polling thread.
+    # Typing does NOT invalidate it: a verdict on the text as of the last
+    # pause is still what the user wants to read while they keep writing.
+    # An evaluation's result is dropped only when (a) the epoch moved —
+    # the draft was sent/cleared, focus left the app, or the guard was
+    # paused — or (b) a newer evaluation's result is already on screen.
+    display = {"epoch": 0, "next_seq": 0, "shown_seq": -1}
+    display_lock = threading.Lock()
 
     def invalidate_evaluation():
-        nonlocal evaluation_generation
-        evaluation_generation += 1
+        with display_lock:
+            display["epoch"] += 1
 
     while not stop_event.is_set():
         if pause_event is not None and pause_event.is_set():
@@ -129,12 +134,21 @@ def run(stop_event, pause_event=None, backend=None):
         runtime_id = backend.safe_runtime_id(control)
         focus_changed = runtime_id != last_runtime_id
         if focus_changed:
+            # Not an invalidation by itself: on macOS the fingerprint
+            # includes the editor's bounds, and Slack's composer grows as
+            # the draft does, so this fires mid-sentence.
             last_runtime_id = runtime_id
             idle_watcher.reset()
             last_logged_text = object()
-            invalidate_evaluation()
 
         process_name = backend.get_process_name(backend.get_process_id(control))
+        if process_name and process_name != last_process_name:
+            # Switching apps (even between two watched ones) ends the
+            # draft the popup describes.
+            if last_process_name is not None:
+                notifier.dismiss()
+                invalidate_evaluation()
+            last_process_name = process_name
         # One config.toml read per poll: both the allowlist and the delay
         # setting are picked up live from changes made in Settings.
         current_config = config.load_config()
@@ -191,13 +205,15 @@ def run(stop_event, pause_event=None, backend=None):
         text = backend.get_control_text(control)
         if text != last_logged_text:
             log.debug("text read: %s", _preview(text))
-            notifier.dismiss()
             last_logged_text = text
-            invalidate_evaluation()
-            # The user may edit a draft and then restore its previous text
-            # while its prior Jev request is still running.  That earlier
-            # answer has been invalidated, so allow the restored text to be
-            # evaluated again after this fresh idle window.
+            if not pre_filter.should_check(text):
+                # Sent (the composer emptied) or cut down to nothing worth
+                # checking: the verdict on screen no longer describes it.
+                notifier.dismiss()
+                invalidate_evaluation()
+            # Otherwise keep the last result up while the user types, so
+            # they can adjust the draft against it. Allow restored text
+            # to be evaluated again after this fresh idle window.
             idle_watcher.reset()
 
         idle_watcher.observe(text)
@@ -237,20 +253,41 @@ def run(stop_event, pause_event=None, backend=None):
                     )
                     for message in conversation.previous_messages:
                         log.debug("context message: %s", _preview(message))
-            # Never block accessibility polling on a remote model call: if
-            # the user resumes typing, this loop immediately invalidates the
-            # generation and the worker silently discards its now-stale
-            # result.  Sync httpx cannot reliably abort a request already in
-            # flight, but it can no longer delay polling or show stale UI.
-            generation = evaluation_generation
+            # Never block accessibility polling on a remote model call: it
+            # runs on a worker, and its answer is shown when it arrives even
+            # if the user has resumed typing, unless the draft was sent or
+            # cleared, focus left, or a newer answer is already up.
+            with display_lock:
+                epoch = display["epoch"]
+                seq = display["next_seq"]
+                display["next_seq"] += 1
 
-            def is_current(generation=generation):
-                return not stop_event.is_set() and generation == evaluation_generation
+            def is_current(epoch=epoch, seq=seq):
+                return (
+                    not stop_event.is_set()
+                    and epoch == display["epoch"]
+                    and seq > display["shown_seq"]
+                )
+
+            def publish(show, is_current=is_current, seq=seq):
+                # Check and show under one lock, so two overlapping
+                # evaluations can't finish out of order on screen.
+                with display_lock:
+                    if not is_current():
+                        return False
+                    display["shown_seq"] = seq
+                    show()
+                    return True
 
             threading.Thread(
                 target=handle_draft,
                 args=(due_text, anchor_rect, disabled_questions),
-                kwargs={"is_current": is_current, "app": app_label, "context": conversation},
+                kwargs={
+                    "is_current": is_current,
+                    "publish": publish,
+                    "app": app_label,
+                    "context": conversation,
+                },
                 daemon=True,
                 name="jev-draft-check",
             ).start()
@@ -338,18 +375,33 @@ def _result_columns(provider_names, outcomes):
     return columns
 
 
+def _publish_now(show):
+    show()
+    return True
+
+
 def handle_draft(
-    text, anchor_rect=None, disabled_questions=None, is_current=None, app=None, context=None
+    text,
+    anchor_rect=None,
+    disabled_questions=None,
+    is_current=None,
+    app=None,
+    context=None,
+    publish=None,
 ):
     """Evaluate one draft and notify only if it is still the current one.
 
-    ``is_current`` is supplied by ``run`` for asynchronous evaluations.  It
-    remains optional so this small unit is also usable directly.  ``app``
+    ``is_current`` and ``publish`` are supplied by ``run`` for asynchronous
+    evaluations: ``is_current()`` says whether this result could still be
+    shown, and ``publish(show)`` atomically re-checks that and calls
+    ``show()``, returning whether it did. Both remain optional so this
+    small unit is also usable directly.  ``app``
     is the watched app's label, used only to bucket usage stats.
     ``context`` is core/context.py's ConversationContext (or None): it is
     sent with the draft, and gates questions that require it.
     """
     is_current = is_current or (lambda: True)
+    publish = publish or _publish_now
     if not pre_filter.should_check(text):
         log.info("pre-filter: skip (too short / plain ack)")
         return
@@ -408,12 +460,13 @@ def handle_draft(
 
     rows, stat_outcomes = _result_rows(active_questions, outcomes)
     columns = _result_columns(provider_names, outcomes)
-    # Do not count or display an answer for a draft which changed while the
-    # request was completing.
-    if not is_current():
-        log.info("discarding stale result")
-        return
-    stats.record_check(stat_outcomes, app=app)
 
-    log.info("notifying results: %s %s %r (anchor_rect=%s)", columns, rows, note, anchor_rect)
-    notifier.notify_results(rows, columns, anchor_rect, note)
+    def show():
+        stats.record_check(stat_outcomes, app=app)
+        log.info("notifying results: %s %s %r (anchor_rect=%s)", columns, rows, note, anchor_rect)
+        notifier.notify_results(rows, columns, anchor_rect, note)
+
+    # Do not count or display an answer once the draft was sent or focus
+    # left, or when a newer evaluation's answer is already on screen.
+    if not publish(show):
+        log.info("discarding stale result")

@@ -35,3 +35,5 @@ def _no_real_popups(monkeypatch):
     # (and can set their own Popen).
     monkeypatch.setattr(notifier.subprocess, "Popen", lambda *_args, **_kwargs: _NoPopup())
     monkeypatch.setattr(notifier, "_ensure_started", lambda: None)
+    # Each test starts with no results card "on screen".
+    monkeypatch.setattr(notifier, "_result_visible_until", 0.0, raising=False)

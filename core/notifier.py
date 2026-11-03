@@ -39,6 +39,7 @@ import queue
 import subprocess
 import sys
 import threading
+import time
 from pathlib import Path
 import tkinter as tk
 
@@ -71,6 +72,25 @@ _start_lock = threading.Lock()
 _started = False
 _popup_process = None
 _popup_process_lock = threading.Lock()
+
+# When the results card on screen auto-dismisses (time.monotonic()), or 0
+# when none is up. While one is, a re-check leaves it in place instead of
+# swapping in an empty "checking…" card, so the last verdict stays
+# readable while the user keeps typing; the new result replaces it.
+_result_visible_until = 0.0
+_result_visible_lock = threading.Lock()
+
+
+def _set_result_visible(seconds):
+    global _result_visible_until
+    with _result_visible_lock:
+        _result_visible_until = time.monotonic() + seconds if seconds else 0.0
+
+
+def result_on_screen():
+    """Whether a results card is (still) displayed."""
+    with _result_visible_lock:
+        return time.monotonic() < _result_visible_until
 
 
 def _position(win, anchor_rect):
@@ -537,8 +557,11 @@ def _show_macos_panel(kind, items, anchor_rect, auto_dismiss_ms):
 
 
 def dismiss():
-    """Remove the current popup as soon as the user resumes typing."""
+    """Remove the current popup: the draft was sent or cleared, or focus
+    left the watched app. Not called on ordinary typing — the last result
+    stays up so the user can adjust the text while reading it."""
     global _popup_process
+    _set_result_visible(0)
     if sys.platform != "darwin":
         # The Windows UI thread owns Tk, so request destruction through its
         # queue instead of touching its windows across threads.
@@ -566,6 +589,7 @@ def notify(items, anchor_rect=None):
     (message, severity) tuples, severity being "error" or "warning".
     `anchor_rect` is the focused control's (left, top, right, bottom) in
     screen coordinates."""
+    _set_result_visible(0)
     if sys.platform == "darwin":
         _show_macos_panel("concerns", items, anchor_rect, _results_dismiss_ms())
     else:
@@ -581,7 +605,14 @@ def _show_table(view, anchor_rect, auto_dismiss_ms):
 
 def notify_checking(labels, anchor_rect=None, provider_names=("Jev",), context_note=None):
     """Show the results card before any answer: every check's row, every
-    provider's column, "…" in each score cell."""
+    provider's column, "…" in each score cell.
+
+    Skipped while a previous result is on screen: blanking it on every
+    typing pause would hide the verdict the user is writing against. The
+    new result replaces it as soon as it's ready."""
+    if result_on_screen():
+        log.debug("keeping the previous result on screen while re-checking")
+        return
     provider_names = list(provider_names)
     columns = [(name, None, True) for name in provider_names]
     view = table_view(pending_rows(labels, len(columns)), columns, context_note)
@@ -591,18 +622,25 @@ def notify_checking(labels, anchor_rect=None, provider_names=("Jev",), context_n
 def notify_progress(rows, columns, anchor_rect=None, context_note=None):
     """Some providers answered, others are still pending (``columns`` as
     in table_view, with ``pending`` set): fill in what's known. Stays up
-    as long as the checking card would, since more is coming."""
+    as long as the checking card would, since more is coming. Like
+    notify_checking, skipped while a previous result is on screen, so the
+    card changes once per check rather than mixing old and new scores."""
+    if result_on_screen():
+        return
     _show_table(table_view(rows, columns, context_note), anchor_rect, CHECKING_DISMISS_MS)
 
 
 def notify_results(rows, columns, anchor_rect=None, context_note=None):
     """Replace the progress card with the complete, stable result. See
     table_view for the shape of ``rows`` and ``columns``."""
-    _show_table(table_view(rows, columns, context_note), anchor_rect, _results_dismiss_ms())
+    dismiss_ms = _results_dismiss_ms()
+    _show_table(table_view(rows, columns, context_note), anchor_rect, dismiss_ms)
+    _set_result_visible(dismiss_ms / 1000)
 
 
 def notify_unavailable(labels, anchor_rect=None, provider_names=("Jev",)):
     """Replace progress with an explicit, non-judgmental request failure."""
+    _set_result_visible(0)
     provider_names = list(provider_names)
     if sys.platform == "darwin":
         _show_macos_panel(
@@ -614,6 +652,7 @@ def notify_unavailable(labels, anchor_rect=None, provider_names=("Jev",)):
 
 def notify_service_issue(message, anchor_rect=None):
     """Explain a failed check when TypeSafe itself reports an API incident."""
+    _set_result_visible(0)
     if sys.platform == "darwin":
         _show_macos_panel("service_issue", [message], anchor_rect, 7000)
     else:
@@ -624,6 +663,7 @@ def notify_ok(anchor_rect=None):
     """Brief green checkmark confirming a check ran and found nothing —
     the "clean" counterpart to notify(), so silence never has to be
     interpreted as either outcome. Also replaces whatever's currently up."""
+    _set_result_visible(0)
     if sys.platform == "darwin":
         _show_macos_panel("ok", [], anchor_rect, 2500)
     else:

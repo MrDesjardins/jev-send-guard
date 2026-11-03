@@ -176,12 +176,26 @@ def test_disabled_questions_for_app_are_passed_through(monkeypatch):
     assert kwargs["app"] == "Discord"
 
 
-def test_typing_discards_an_inflight_jev_result(monkeypatch):
-    """Polling must continue while Jev is slow, and its old answer is useless."""
+def _start_loop(backend):
+    stop_event = threading.Event()
+    thread = threading.Thread(target=watch_loop.run, args=(stop_event, None, backend))
+    thread.start()
+    return stop_event, thread
+
+
+def _stop_loop(stop_event, thread):
+    stop_event.set()
+    thread.join(timeout=2)
+
+
+def test_typing_keeps_the_popup_and_still_shows_an_inflight_result(monkeypatch):
+    """The user pauses, a check starts, then they keep writing: the answer
+    for the paused text is still shown, and typing never closes the popup,
+    so they can adjust the rest of the draft against it."""
     config.add_app(label="Discord", process_name="Discord.exe")
     started = threading.Event()
     release = threading.Event()
-    checking = []
+    dismissed = []
     notified = []
 
     def slow_check(*_args, **_kwargs):
@@ -190,33 +204,119 @@ def test_typing_discards_an_inflight_jev_result(monkeypatch):
         return {"curt": 0.9}
 
     monkeypatch.setattr(watch_loop.jev_client, "check_draft", slow_check)
-    monkeypatch.setattr(
-        watch_loop.notifier, "notify_checking", lambda *args: checking.append(args)
-    )
-    monkeypatch.setattr(
-        watch_loop.notifier, "notify_results", lambda *args: notified.append(args)
-    )
+    monkeypatch.setattr(watch_loop.notifier, "notify_checking", lambda *args: None)
+    monkeypatch.setattr(watch_loop.notifier, "notify_results", lambda *args: notified.append(args))
+    monkeypatch.setattr(watch_loop.notifier, "dismiss", lambda: dismissed.append(True))
+    monkeypatch.setattr(watch_loop.stats, "record_check", lambda *_args, **_kwargs: None)
 
     backend = MockBackend()
     backend.focused_control = MockControl(
         "Discord.exe", text="This is a long enough draft to be evaluated"
     )
-    stop_event = threading.Event()
-    thread = threading.Thread(target=watch_loop.run, args=(stop_event, None, backend))
-    thread.start()
+    stop_event, thread = _start_loop(backend)
     assert started.wait(timeout=2)
 
-    # The next poll sees this edit while the old HTTP request is still
-    # blocked.  Releasing the old request must not produce a popup.
-    backend.focused_control.text = "This revised draft supersedes the previous one"
+    backend.focused_control.text = "This is a long enough draft to be evaluated, and more"
     time.sleep(watch_loop.POLL_INTERVAL_SEC * 3)
     release.set()
     time.sleep(watch_loop.POLL_INTERVAL_SEC * 3)
-    stop_event.set()
-    thread.join(timeout=2)
+    _stop_loop(stop_event, thread)
 
-    assert checking == [(LABELS, None, ["Jev"], NO_CONTEXT)]
+    assert len(notified) >= 1
+    assert notified[0][0][0][1] is True  # Tone flagged for the paused text
+    assert dismissed == []
+
+
+def test_sending_the_draft_dismisses_and_discards_an_inflight_result(monkeypatch):
+    """Once the composer empties (sent or cleared), a late answer about
+    the old draft is useless."""
+    config.add_app(label="Discord", process_name="Discord.exe")
+    started = threading.Event()
+    release = threading.Event()
+    dismissed = []
+    notified = []
+
+    def slow_check(*_args, **_kwargs):
+        started.set()
+        assert release.wait(timeout=2)
+        return {"curt": 0.9}
+
+    monkeypatch.setattr(watch_loop.jev_client, "check_draft", slow_check)
+    monkeypatch.setattr(watch_loop.notifier, "notify_checking", lambda *args: None)
+    monkeypatch.setattr(watch_loop.notifier, "notify_results", lambda *args: notified.append(args))
+    monkeypatch.setattr(watch_loop.notifier, "dismiss", lambda: dismissed.append(True))
+
+    backend = MockBackend()
+    backend.focused_control = MockControl(
+        "Discord.exe", text="This is a long enough draft to be evaluated"
+    )
+    stop_event, thread = _start_loop(backend)
+    assert started.wait(timeout=2)
+
+    backend.focused_control.text = "\n"
+    time.sleep(watch_loop.POLL_INTERVAL_SEC * 3)
+    release.set()
+    time.sleep(watch_loop.POLL_INTERVAL_SEC * 3)
+    _stop_loop(stop_event, thread)
+
     assert notified == []
+    assert dismissed  # the popup closes when the message is sent
+
+
+def test_an_older_answer_never_replaces_a_newer_one(monkeypatch):
+    """Two overlapping checks: the second (newer text) answers first, so
+    the first's late answer must not overwrite it on screen."""
+    config.add_app(label="Discord", process_name="Discord.exe")
+    first_started = threading.Event()
+    release_first = threading.Event()
+    notified = []
+
+    def check(_key, text, questions=None, provider="jev", context=None):
+        if text.endswith("first"):
+            first_started.set()
+            assert release_first.wait(timeout=2)
+        return {"curt": 0.9 if text.endswith("first") else 0.1}
+
+    monkeypatch.setattr(watch_loop.jev_client, "check_draft", check)
+    monkeypatch.setattr(watch_loop.notifier, "notify_checking", lambda *args: None)
+    monkeypatch.setattr(watch_loop.notifier, "notify_results", lambda *args: notified.append(args))
+    monkeypatch.setattr(watch_loop.stats, "record_check", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(watch_loop.config, "get_idle_seconds", lambda *_args: 0.05)
+
+    backend = MockBackend()
+    backend.focused_control = MockControl("Discord.exe", text="A long enough draft, the first")
+    stop_event, thread = _start_loop(backend)
+    assert first_started.wait(timeout=2)
+
+    backend.focused_control.text = "A long enough draft, the second"
+    deadline = time.time() + 2
+    while not notified and time.time() < deadline:
+        time.sleep(0.01)
+    release_first.set()
+    time.sleep(watch_loop.POLL_INTERVAL_SEC * 5)
+    _stop_loop(stop_event, thread)
+
+    assert len(notified) == 1
+    assert notified[0][0][0][4] == [0.1]  # the second draft's answer
+
+
+def test_switching_apps_dismisses_the_popup(monkeypatch):
+    config.add_app(label="Discord", process_name="Discord.exe")
+    config.add_app(label="Slack", process_name="Slack")
+    dismissed = []
+    monkeypatch.setattr(watch_loop, "handle_draft", lambda *a, **k: None)
+    monkeypatch.setattr(watch_loop.notifier, "dismiss", lambda: dismissed.append(True))
+
+    backend = MockBackend()
+    backend.focused_control = MockControl("Discord.exe", text="A long enough draft to check")
+    stop_event, thread = _start_loop(backend)
+    time.sleep(watch_loop.POLL_INTERVAL_SEC * 3)
+    assert dismissed == []
+    backend.focused_control = MockControl("Slack", text="Another long enough draft", pid=99)
+    time.sleep(watch_loop.POLL_INTERVAL_SEC * 3)
+    _stop_loop(stop_event, thread)
+
+    assert dismissed
 
 
 # Without conversation context: "Answers the thread" requires previous
